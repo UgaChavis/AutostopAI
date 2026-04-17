@@ -17,70 +17,20 @@ class ScenarioPolicy:
 
 _SCENARIO_POLICIES: dict[str, ScenarioPolicy] = {
     "vin_enrichment": ScenarioPolicy(
-        required_tools=("decode_vin",),
+        required_tools=("research_vin",),
         allowed_write_targets=("description", "vehicle", "vehicle_profile"),
-        source_type="external_vin",
+        source_type="vin_research",
     ),
-    "parts_lookup": ScenarioPolicy(
-        required_tools=("find_part_numbers",),
-        optional_tools=("estimate_price_ru", "lookup_part_prices"),
-        allowed_write_targets=("description",),
-        source_type="external_parts",
-    ),
-    "maintenance_lookup": ScenarioPolicy(
-        required_tools=("estimate_maintenance",),
-        optional_tools=("lookup_part_prices",),
-        allowed_write_targets=("description",),
-        source_type="external_maintenance",
-    ),
-    "dtc_lookup": ScenarioPolicy(
-        required_tools=("decode_dtc",),
-        optional_tools=("search_fault_info",),
-        allowed_write_targets=("description",),
-        source_type="external_diagnostic",
-    ),
-    "fault_research": ScenarioPolicy(
-        required_tools=("search_fault_info",),
-        allowed_write_targets=("description",),
-        source_type="external_fault",
-    ),
-    "normalization": ScenarioPolicy(
-        allowed_write_targets=("title", "description", "tags", "vehicle"),
-        source_type="crm",
-    ),
-    "repair_order_assistance": ScenarioPolicy(
-        allowed_write_targets=("description", "repair_order", "repair_order_works", "repair_order_materials"),
-        source_type="crm",
-    ),
-    "board_review": ScenarioPolicy(source_type="crm"),
-    "cash_review": ScenarioPolicy(source_type="crm"),
-    "freeform_manual": ScenarioPolicy(source_type="crm"),
 }
 
 
 _TOOL_SOURCE_TYPES = {
-    "decode_vin": "external_vin",
-    "find_part_numbers": "external_parts",
-    "search_part_numbers": "external_parts",
-    "estimate_price_ru": "external_price",
-    "lookup_part_prices": "external_price",
-    "decode_dtc": "external_diagnostic",
-    "search_fault_info": "external_fault",
-    "estimate_maintenance": "external_maintenance",
-    "search_web": "external_search",
-    "fetch_page_excerpt": "external_page",
+    "research_vin": "vin_research",
+    "decode_vin": "vin_research",
+    "get_card": "crm",
+    "get_card_context": "crm",
     "update_card": "crm_write",
-    "update_repair_order": "crm_write",
-    "replace_repair_order_works": "crm_write",
-    "replace_repair_order_materials": "crm_write",
-    "set_repair_order_status": "crm_write",
-    "create_card": "crm_write",
-    "move_card": "crm_write",
-    "archive_card": "crm_write",
-    "restore_card": "crm_write",
-    "create_cashbox": "crm_write",
-    "delete_cashbox": "crm_write",
-    "create_cash_transaction": "crm_write",
+    "ping_connector": "crm",
 }
 
 
@@ -96,31 +46,17 @@ class ToolPolicyEngine:
         normalized_execution_mode = str(execution_mode or "model_loop").strip().lower() or "model_loop"
         normalized_chain = self._normalize_chain(scenario_chain)
         if not normalized_chain:
-            normalized_chain = ["freeform_manual"]
-        recognized_chain = [item for item in normalized_chain if item in _SCENARIO_POLICIES]
-        if recognized_chain:
-            normalized_chain = recognized_chain
-        else:
-            normalized_chain = ["freeform_manual"]
-        primary = next(
-            (item for item in normalized_chain if item not in {"normalization", "freeform_manual"}),
-            normalized_chain[0],
-        )
+            normalized_chain = ["vin_enrichment"]
+        normalized_chain = [item for item in normalized_chain if item in _SCENARIO_POLICIES] or ["vin_enrichment"]
+        primary = normalized_chain[0]
         required_tools: list[str] = []
-        optional_tools: list[str] = []
         allowed_write_targets: list[str] = []
-        forbidden_write_targets: list[str] = []
         for scenario_name in normalized_chain:
             policy = self._policy_for(scenario_name)
             required_tools.extend(policy.required_tools)
-            optional_tools.extend(policy.optional_tools)
             allowed_write_targets.extend(policy.allowed_write_targets)
-            forbidden_write_targets.extend(policy.forbidden_write_targets)
         required_unique = self._unique(required_tools)
-        optional_unique = [item for item in self._unique(optional_tools) if item not in required_unique]
-        forbidden_unique = self._unique(forbidden_write_targets)
-        forbidden_set = set(forbidden_unique)
-        allowed_unique = [item for item in self._unique(allowed_write_targets) if item not in forbidden_set]
+        allowed_unique = self._unique(allowed_write_targets)
         stop_conditions = [f"missing_required_tool:{tool_name}" for tool_name in required_unique]
         if normalized_execution_mode == "model_loop" and allowed_unique:
             stop_conditions.append("forbid_unplanned_writes")
@@ -129,28 +65,20 @@ class ToolPolicyEngine:
             "owner": "card_service" if followup_enabled else "",
             "mode": "adaptive_followup" if followup_enabled else "none",
         }
-        confidence_mode = "standard"
-        write_mode = "patch_only"
-        if normalized_execution_mode == "structured_card":
-            write_mode = "patch_only_additive"
-        if any(item in {"vin_enrichment", "dtc_lookup"} for item in normalized_chain):
-            confidence_mode = "confirmed_only"
-        elif any(item in {"parts_lookup", "fault_research", "maintenance_lookup"} for item in normalized_chain):
-            confidence_mode = "evidence_guided"
         return PlanResult(
             scenario_id=primary,
             scenario_chain=normalized_chain,
             execution_mode=normalized_execution_mode,
-            needs_external_tools=bool(required_unique or optional_unique),
+            needs_external_tools=bool(required_unique),
             required_tools=required_unique,
-            optional_tools=optional_unique,
-            tool_order=required_unique + [item for item in optional_unique if item not in required_unique],
+            optional_tools=[],
+            tool_order=list(required_unique),
             allowed_write_targets=allowed_unique,
-            forbidden_write_targets=forbidden_unique,
+            forbidden_write_targets=[],
             stop_conditions=stop_conditions,
             followup_policy=followup_policy,
-            confidence_mode=confidence_mode,
-            write_mode=write_mode,
+            confidence_mode="confirmed_only",
+            write_mode="patch_only",
             notes=list(notes or []),
         )
 
@@ -204,7 +132,7 @@ class ToolPolicyEngine:
 
     def _policy_for(self, scenario_name: str) -> ScenarioPolicy:
         normalized_name = str(scenario_name or "").strip().lower()
-        return _SCENARIO_POLICIES.get(normalized_name, _SCENARIO_POLICIES["freeform_manual"])
+        return _SCENARIO_POLICIES.get(normalized_name, _SCENARIO_POLICIES["vin_enrichment"])
 
     def _normalize_chain(self, scenario_chain: list[str]) -> list[str]:
         result: list[str] = []

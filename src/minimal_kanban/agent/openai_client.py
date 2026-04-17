@@ -38,7 +38,15 @@ class OpenAIJsonAgentClient:
     def model(self) -> str:
         return self._model
 
-    def complete_json(self, *, instructions: str, messages: list[dict[str, str]], temperature: float = 0.1) -> dict[str, Any]:
+    def complete_json(
+        self,
+        *,
+        instructions: str,
+        messages: list[dict[str, str]],
+        temperature: float = 0.1,
+        reasoning_effort: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         input_messages = []
         for message in messages:
             message_text = str(message.get("content") or "")
@@ -50,11 +58,17 @@ class OpenAIJsonAgentClient:
             )
         payload = {
             "model": self._model,
-            "temperature": temperature,
             "instructions": instructions.strip(),
             "text": {"format": {"type": "json_object"}},
             "input": input_messages,
         }
+        del temperature
+        normalized_reasoning_effort = str(reasoning_effort or "").strip().lower()
+        if normalized_reasoning_effort:
+            payload["reasoning"] = {"effort": normalized_reasoning_effort}
+        normalized_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
+        if normalized_tools:
+            payload["tools"] = normalized_tools
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Content-Type": "application/json",
@@ -67,9 +81,61 @@ class OpenAIJsonAgentClient:
             raise AgentModelError("Agent model returned an unexpected payload.") from exc
         return self._parse_json_payload(message)
 
-    def next_step(self, *, system_prompt: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+    def complete_text(
+        self,
+        *,
+        instructions: str,
+        messages: list[dict[str, str]],
+        reasoning_effort: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> str:
+        input_messages = []
+        for message in messages:
+            message_text = str(message.get("content") or "")
+            input_messages.append(
+                {
+                    "role": str(message.get("role") or "user"),
+                    "content": message_text,
+                }
+            )
+        payload = {
+            "model": self._model,
+            "instructions": instructions.strip(),
+            "input": input_messages,
+        }
+        normalized_reasoning_effort = str(reasoning_effort or "").strip().lower()
+        if normalized_reasoning_effort:
+            payload["reasoning"] = {"effort": normalized_reasoning_effort}
+        normalized_tools = [tool for tool in (tools or []) if isinstance(tool, dict)]
+        if normalized_tools:
+            payload["tools"] = normalized_tools
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        response = self._post_with_retry(headers=headers, payload=payload)
+        try:
+            payload = response.json()
+            return self._extract_output_text(payload)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise AgentModelError("Agent model returned an unexpected payload.") from exc
+
+    def next_step(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[dict[str, str]],
+        reasoning_effort: str | None = "high",
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         instructions = f"{system_prompt.strip()}\n\nReturn only one JSON object that matches the requested schema."
-        return self.complete_json(instructions=instructions, messages=messages, temperature=0.1)
+        return self.complete_json(
+            instructions=instructions,
+            messages=messages,
+            temperature=0.1,
+            reasoning_effort=reasoning_effort,
+            tools=tools,
+        )
 
     def _extract_error_message(self, response: httpx.Response) -> str:
         status = response.status_code

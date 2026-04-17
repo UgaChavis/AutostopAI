@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from ..config import (
@@ -37,6 +38,29 @@ def _env_float(name: str, default: float, *, minimum: float = 0.1) -> float:
         return max(minimum, float(raw_value))
     except ValueError:
         return default
+
+
+def _read_secret_file(path_value: str) -> str | None:
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not value:
+        return None
+    for line in value.splitlines():
+        candidate = line.strip()
+        if re.fullmatch(r"sk-[A-Za-z0-9_-]{20,}", candidate):
+            return candidate
+    match = re.search(r"sk-[A-Za-z0-9_-]{20,}", value)
+    if match:
+        return match.group(0)
+    return value or None
 
 
 def get_agent_enabled() -> bool:
@@ -83,13 +107,27 @@ def get_agent_actions_file() -> Path:
     return get_agent_data_dir() / "actions.jsonl"
 
 
+def get_agent_vin_cache_file() -> Path:
+    return get_agent_data_dir() / "vin_cache.json"
+
+
 def get_agent_lock_file() -> Path:
     return get_agent_data_dir() / "agent.lock"
 
 
 def get_agent_openai_api_key() -> str | None:
     value = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    return value or None
+    if value:
+        return value
+    for env_name in (
+        "MINIMAL_KANBAN_OPENAI_API_KEY_FILE",
+        "OPENAI_API_KEY_FILE",
+        "MINIMAL_KANBAN_AGENT_OPENAI_API_KEY_FILE",
+    ):
+        file_value = _read_secret_file(os.environ.get(env_name) or "")
+        if file_value:
+            return file_value
+    return None
 
 
 def get_agent_openai_model() -> str:

@@ -82,6 +82,7 @@ VEHICLE_SOURCE_LINK_LIMIT = 12
 VEHICLE_SOURCE_LINK_TEXT_LIMIT = 240
 VIN_SOFT_PATTERN = re.compile(r"\b([A-HJ-NPR-Z0-9]{11,17})\b", re.IGNORECASE)
 _VIN_ALLOWED_PATTERN = re.compile(r"^[A-HJ-NPR-Z0-9]+$", re.IGNORECASE)
+_MARKDOWN_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 def normalize_vehicle_text(value, *, limit: int = VEHICLE_TEXT_LIMIT) -> str:
@@ -92,6 +93,26 @@ def normalize_vehicle_text(value, *, limit: int = VEHICLE_TEXT_LIMIT) -> str:
 def normalize_vehicle_notes(value, *, limit: int = VEHICLE_NOTE_LIMIT) -> str:
     text = str(value or "").strip()
     return text[:limit]
+
+
+def _strip_markdown_links(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = _MARKDOWN_LINK_PATTERN.sub(lambda match: match.group(1).strip(), text)
+    text = re.sub(r"\s*\((?:https?://|www\.|[A-Za-z0-9-]+\.[A-Za-z]{2,}[^)]*)\)", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _normalize_source_reference(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = _MARKDOWN_LINK_PATTERN.search(text)
+    if match:
+        return match.group(2).strip()
+    return text
 
 
 def normalize_vehicle_raw_text(value, *, limit: int = VEHICLE_RAW_TEXT_LIMIT) -> str:
@@ -203,6 +224,26 @@ def normalize_source_confidence(value) -> float:
     return round(parsed, 2)
 
 
+def _normalize_source_confidence_hint(value: Any) -> float:
+    numeric = normalize_source_confidence(value)
+    if numeric > 0:
+        return numeric
+    label = str(value or "").strip().lower()
+    confidence_map = {
+        "low": 0.45,
+        "poor": 0.45,
+        "weak": 0.45,
+        "medium": 0.75,
+        "moderate": 0.75,
+        "high": 0.9,
+        "strong": 0.9,
+        "confirmed": 0.97,
+        "success": 0.97,
+        "certain": 0.97,
+    }
+    return confidence_map.get(label, 0.0)
+
+
 def normalize_completion_state(value) -> VehicleCompletionState:
     candidate = str(value or "").strip().lower()
     if candidate not in VALID_VEHICLE_COMPLETION_STATES:
@@ -239,6 +280,98 @@ def build_vehicle_display(make_display: str, model_display: str, production_year
     if production_year and display:
         return f"{display} {production_year}"
     return display
+
+
+def _build_vehicle_profile_patch_from_vin_payload(
+    vin_payload: dict[str, Any] | None,
+    *,
+    existing_profile: dict[str, Any] | None = None,
+    current_vin: str = "",
+    source_label: str = "VIN research",
+    source_key: str = "vin_research",
+) -> dict[str, Any]:
+    if not isinstance(vin_payload, dict):
+        return {}
+    existing = existing_profile if isinstance(existing_profile, dict) else {}
+    patch: dict[str, Any] = {}
+    field_sources: dict[str, str] = {}
+    autofilled_fields: list[str] = []
+
+    def _set_if_missing(field_name: str, value: Any) -> None:
+        text = _strip_markdown_links(value)
+        if not text or str(existing.get(field_name, "") or "").strip():
+            return
+        patch[field_name] = text
+        autofilled_fields.append(field_name)
+        field_sources[field_name] = source_key
+
+    vin_value = normalize_vehicle_text(vin_payload.get("vin") or current_vin, limit=17)
+    _set_if_missing("vin", vin_value)
+    _set_if_missing("make_display", vin_payload.get("make"))
+    _set_if_missing("model_display", vin_payload.get("model"))
+    if not str(existing.get("production_year", "") or "").strip():
+        try:
+            year_value = int(str(vin_payload.get("model_year", "") or "").strip())
+        except (TypeError, ValueError):
+            year_value = None
+        if year_value:
+            patch["production_year"] = year_value
+            autofilled_fields.append("production_year")
+            field_sources["production_year"] = source_key
+    _set_if_missing("engine_model", vin_payload.get("engine_model"))
+    _set_if_missing("gearbox_model", vin_payload.get("transmission"))
+    _set_if_missing("drivetrain", vin_payload.get("drive_type"))
+    if not patch:
+        return {}
+    source_url = _normalize_source_reference(vin_payload.get("source_url", ""))
+    patch["source_summary"] = _strip_markdown_links(source_label)
+    source_confidence = _normalize_source_confidence_hint(vin_payload.get("source_confidence"))
+    patch["source_confidence"] = source_confidence if source_confidence > 0 else 0.78
+    patch["autofilled_fields"] = autofilled_fields
+    patch["field_sources"] = field_sources
+    source_links = [
+        ref
+        for ref in (
+            _normalize_source_reference(item)
+            for item in (vin_payload.get("source_links_or_refs") if isinstance(vin_payload.get("source_links_or_refs"), list) else [])
+        )
+        if ref
+    ]
+    if source_url and source_url not in source_links:
+        source_links.insert(0, source_url)
+    patch["source_links_or_refs"] = source_links
+    patch["data_completion_state"] = "mostly_autofilled" if len(autofilled_fields) >= 3 else "partially_autofilled"
+    return patch
+
+
+def build_vehicle_profile_patch_from_vin_decode(
+    decoded_vin: dict[str, Any] | None,
+    *,
+    existing_profile: dict[str, Any] | None = None,
+    current_vin: str = "",
+) -> dict[str, Any]:
+    return _build_vehicle_profile_patch_from_vin_payload(
+        decoded_vin,
+        existing_profile=existing_profile,
+        current_vin=current_vin,
+        source_label="official VIN decode",
+        source_key="official_vin_decode_nhtsa",
+    )
+
+
+def build_vehicle_profile_patch_from_vin_research(
+    vin_research: dict[str, Any] | None,
+    *,
+    existing_profile: dict[str, Any] | None = None,
+    current_vin: str = "",
+) -> dict[str, Any]:
+    return _build_vehicle_profile_patch_from_vin_payload(
+        vin_research,
+        existing_profile=existing_profile,
+        current_vin=current_vin,
+        source_label="VIN web research",
+        source_key="vin_web_research",
+    )
 
 
 @dataclass(slots=True)

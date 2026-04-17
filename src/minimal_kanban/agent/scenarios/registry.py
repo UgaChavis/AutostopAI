@@ -1,26 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Iterable
 
 from .base import ScenarioContext, ScenarioExecutionResult, ScenarioExecutor
-from .dtc_lookup import DtcLookupScenarioExecutor
-from .fault_research import FaultResearchScenarioExecutor
-from .maintenance_lookup import MaintenanceLookupScenarioExecutor
-from .parts_lookup import PartsLookupScenarioExecutor
 from .vin_enrichment import VinEnrichmentScenarioExecutor
-
-
-@dataclass(frozen=True)
-class PassthroughScenarioExecutor:
-    scenario_id: str
-
-    def execute(self, context: ScenarioContext) -> ScenarioExecutionResult:
-        return ScenarioExecutionResult(
-            scenario_id=self.scenario_id,
-            status="registered",
-            notes=[f"Scenario '{self.scenario_id}' is registered but still executed by legacy runner logic."],
-        )
 
 
 class ScenarioRegistry:
@@ -46,17 +29,4 @@ class ScenarioRegistry:
 
 
 def build_default_scenario_registry() -> ScenarioRegistry:
-    return ScenarioRegistry(
-        [
-            VinEnrichmentScenarioExecutor(),
-            PartsLookupScenarioExecutor(),
-            MaintenanceLookupScenarioExecutor(),
-            DtcLookupScenarioExecutor(),
-            FaultResearchScenarioExecutor(),
-            PassthroughScenarioExecutor("normalization"),
-            PassthroughScenarioExecutor("repair_order_assistance"),
-            PassthroughScenarioExecutor("board_review"),
-            PassthroughScenarioExecutor("cash_review"),
-            PassthroughScenarioExecutor("freeform_manual"),
-        ]
-    )
+    return ScenarioRegistry([VinEnrichmentScenarioExecutor()])

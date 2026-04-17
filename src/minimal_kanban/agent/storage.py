@@ -18,6 +18,7 @@ from .config import (
     get_agent_schedules_file,
     get_agent_status_file,
     get_agent_tasks_file,
+    get_agent_vin_cache_file,
 )
 
 
@@ -52,6 +53,7 @@ DEFAULT_MAX_FINISHED_TASKS = 300
 DEFAULT_MAX_RUNS = 1000
 DEFAULT_MAX_ACTIONS = 4000
 DEFAULT_COMPACT_THRESHOLD_BYTES = 262_144
+DEFAULT_VIN_CACHE: dict[str, Any] = {}
 
 
 class AgentStorage:
@@ -77,12 +79,14 @@ class AgentStorage:
         self._status_file = self._base_dir / get_agent_status_file().name
         self._runs_file = self._base_dir / get_agent_runs_file().name
         self._actions_file = self._base_dir / get_agent_actions_file().name
+        self._vin_cache_file = self._base_dir / get_agent_vin_cache_file().name
         self._lock_file = self._base_dir / get_agent_lock_file().name
         self._process_lock = ProcessFileLock(self._lock_file)
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_json_file(self._tasks_file, [])
         self._ensure_json_file(self._schedules_file, [])
         self._ensure_json_file(self._status_file, DEFAULT_STATUS)
+        self._ensure_json_file(self._vin_cache_file, DEFAULT_VIN_CACHE)
         self._ensure_text_file(self._prompt_file, "")
         self._ensure_text_file(self._memory_file, "")
         self._ensure_text_file(self._runs_file, "")
@@ -357,6 +361,32 @@ class AgentStorage:
 
     def append_action(self, payload: dict[str, Any]) -> None:
         self._append_jsonl(self._actions_file, payload, retention=self._max_actions)
+
+    def read_vin_cache(self) -> dict[str, Any]:
+        with self._lock, self._process_lock.acquire():
+            payload = self._read_json(self._vin_cache_file, DEFAULT_VIN_CACHE)
+        return payload if isinstance(payload, dict) else {}
+
+    def get_vin_cache_entry(self, vin: str) -> dict[str, Any] | None:
+        normalized_vin = str(vin or "").strip().upper()
+        if not normalized_vin:
+            return None
+        cache = self.read_vin_cache()
+        entry = cache.get(normalized_vin)
+        return dict(entry) if isinstance(entry, dict) else None
+
+    def upsert_vin_cache_entry(self, vin: str, payload: dict[str, Any]) -> dict[str, Any]:
+        normalized_vin = str(vin or "").strip().upper()
+        if not normalized_vin:
+            raise ValueError("vin is required")
+        entry = dict(payload)
+        entry["vin"] = normalized_vin
+        with self._lock, self._process_lock.acquire():
+            cache = self._read_json(self._vin_cache_file, DEFAULT_VIN_CACHE)
+            cache = cache if isinstance(cache, dict) else {}
+            cache[normalized_vin] = entry
+            self._write_json(self._vin_cache_file, cache)
+        return entry
 
     def list_runs(self, *, limit: int = 50) -> list[dict[str, Any]]:
         return self._read_jsonl(self._runs_file, limit=limit)

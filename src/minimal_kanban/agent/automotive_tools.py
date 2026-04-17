@@ -78,13 +78,16 @@ class AutomotiveLookupService:
         return deepcopy(result)
 
     def decode_vin(self, vin: str) -> dict[str, Any]:
+        return self.research_vin(vin)
+
+    def research_vin(self, vin: str, limit: int = 5) -> dict[str, Any]:
         normalized_vin = str(vin or "").strip().upper()
         if len(normalized_vin) < 11:
             raise InternetToolError("VIN is required and must be at least 11 characters.")
         return self._cached_result(
-            "decode_vin",
-            {"vin": normalized_vin},
-            lambda: self._decode_vin_uncached(normalized_vin),
+            "research_vin",
+            {"vin": normalized_vin, "limit": int(limit or 5)},
+            lambda: self._research_vin_uncached(normalized_vin, limit=max(1, limit or 5)),
         )
 
     def search_part_numbers(self, *, vehicle_context: dict[str, Any] | None, part_query: str, limit: int = 8) -> dict[str, Any]:
@@ -170,6 +173,97 @@ class AutomotiveLookupService:
             "error_code": self._text(row.get("ErrorCode")),
             "source": "NHTSA vPIC",
             "source_url": url,
+        }
+
+    def _research_vin_uncached(self, normalized_vin: str, *, limit: int) -> dict[str, Any]:
+        queries = [
+            f'"{normalized_vin}" VIN specifications',
+            f'"{normalized_vin}" vehicle specifications engine transmission',
+            f'"{normalized_vin}" make model year',
+        ]
+        allowed_domains = [
+            "vpic.nhtsa.dot.gov",
+            "get.vin",
+            "www.vindecoderz.com",
+            "vindecoderz.com",
+            "vincheck.info",
+            "www.vincheck.info",
+            "vehiclehistory.com",
+            "www.vehiclehistory.com",
+        ]
+        raw_results: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for query in queries:
+            payload = self._search_web_uncached(query=query, limit=limit, allowed_domains=allowed_domains)
+            results = payload.get("results") if isinstance(payload, dict) else []
+            if not isinstance(results, list):
+                continue
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                url = str(item.get("url", "") or "").strip()
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                excerpt = ""
+                try:
+                    fetched = self._fetch_page_excerpt_uncached(url=url, max_chars=1600)
+                    excerpt = self._text(fetched.get("excerpt"))
+                except InternetToolError:
+                    excerpt = ""
+                raw_results.append(
+                    {
+                        "title": self._text(item.get("title")),
+                        "url": url,
+                        "domain": self._text(item.get("domain")),
+                        "snippet": self._text(item.get("snippet")),
+                        "excerpt": excerpt,
+                    }
+                )
+                if len(raw_results) >= limit:
+                    break
+            if len(raw_results) >= limit:
+                break
+        if len(raw_results) < max(2, limit // 2):
+            for query in queries:
+                payload = self._search_web_uncached(query=query, limit=limit, allowed_domains=[])
+                results = payload.get("results") if isinstance(payload, dict) else []
+                if not isinstance(results, list):
+                    continue
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    url = str(item.get("url", "") or "").strip()
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    excerpt = ""
+                    try:
+                        fetched = self._fetch_page_excerpt_uncached(url=url, max_chars=1600)
+                        excerpt = self._text(fetched.get("excerpt"))
+                    except InternetToolError:
+                        excerpt = ""
+                    raw_results.append(
+                        {
+                            "title": self._text(item.get("title")),
+                            "url": url,
+                            "domain": self._text(item.get("domain")),
+                            "snippet": self._text(item.get("snippet")),
+                            "excerpt": excerpt,
+                        }
+                    )
+                    if len(raw_results) >= limit:
+                        break
+                if len(raw_results) >= limit:
+                    break
+        return {
+            "vin": normalized_vin,
+            "queries": queries,
+            "results": raw_results,
+            "source_summary": "Public VIN web research",
+            "source_confidence": 0.0,
+            "source_links_or_refs": [item["url"] for item in raw_results if item.get("url")],
+            "source": "web_research",
         }
 
     def _search_part_numbers_uncached(self, *, context: dict[str, Any], normalized_query: str, limit: int) -> dict[str, Any]:

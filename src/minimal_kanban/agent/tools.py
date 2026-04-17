@@ -51,6 +51,7 @@ class AgentToolExecutor:
             "delete_cashbox": self._delete_cashbox,
             "create_cash_transaction": self._create_cash_transaction,
             "decode_vin": self._decode_vin,
+            "research_vin": self._research_vin,
             "find_part_numbers": self._find_part_numbers,
             "search_part_numbers": self._search_part_numbers,
             "estimate_price_ru": self._estimate_price_ru,
@@ -66,52 +67,14 @@ class AgentToolExecutor:
     def definitions(self) -> list[AgentToolDefinition]:
         return [
             AgentToolDefinition("ping_connector", "Check local CRM/API reachability.", {}),
-            AgentToolDefinition(
-                "review_board",
-                "Get an operational board summary with alerts and priority cards.",
-                {
-                    "stale_hours": "optional int",
-                    "overload_threshold": "optional int",
-                    "priority_limit": "optional int",
-                    "recent_event_limit": "optional int",
-                },
-            ),
-            AgentToolDefinition("list_columns", "List board columns.", {}),
-            AgentToolDefinition("get_board_snapshot", "Get board snapshot.", {"archive_limit": "optional int"}),
-            AgentToolDefinition(
-                "search_cards",
-                "Search cards by text and filters.",
-                {
-                    "query": "optional string",
-                    "include_archived": "optional bool",
-                    "column": "optional string",
-                    "tag": "optional string",
-                    "indicator": "optional string",
-                    "status": "optional string",
-                    "limit": "optional int",
-                },
-            ),
             AgentToolDefinition("get_card", "Get one card by id.", {"card_id": "required string"}),
             AgentToolDefinition(
                 "get_card_context",
-                "Get one card with related context and events.",
+                "Get one card with current context and events.",
                 {
                     "card_id": "required string",
                     "event_limit": "optional int",
                     "include_repair_order_text": "optional bool",
-                },
-            ),
-            AgentToolDefinition(
-                "create_card",
-                "Create a new card.",
-                {
-                    "vehicle": "optional string",
-                    "title": "required string",
-                    "description": "optional string",
-                    "column": "optional string",
-                    "tags": "optional array",
-                    "deadline": "optional object",
-                    "vehicle_profile": "optional object",
                 },
             ),
             AgentToolDefinition(
@@ -128,126 +91,9 @@ class AgentToolExecutor:
                 },
             ),
             AgentToolDefinition(
-                "move_card",
-                "Move a card to another column or position.",
-                {
-                    "card_id": "required string",
-                    "column": "required string",
-                    "before_card_id": "optional string",
-                },
-            ),
-            AgentToolDefinition("archive_card", "Archive a card.", {"card_id": "required string"}),
-            AgentToolDefinition("restore_card", "Restore an archived card.", {"card_id": "required string", "column": "optional string"}),
-            AgentToolDefinition(
-                "list_repair_orders",
-                "List repair orders.",
-                {
-                    "limit": "optional int",
-                    "status": "optional string",
-                    "query": "optional string",
-                    "sort_by": "optional string",
-                    "sort_dir": "optional string",
-                },
-            ),
-            AgentToolDefinition("get_repair_order", "Get repair order by card id.", {"card_id": "required string"}),
-            AgentToolDefinition(
-                "update_repair_order",
-                "Update repair order object for a card.",
-                {"card_id": "required string", "repair_order": "required object"},
-            ),
-            AgentToolDefinition(
-                "replace_repair_order_works",
-                "Replace repair order works rows.",
-                {"card_id": "required string", "rows": "required array"},
-            ),
-            AgentToolDefinition(
-                "replace_repair_order_materials",
-                "Replace repair order material rows.",
-                {"card_id": "required string", "rows": "required array"},
-            ),
-            AgentToolDefinition(
-                "set_repair_order_status",
-                "Set repair order status.",
-                {"card_id": "required string", "status": "required string"},
-            ),
-            AgentToolDefinition("list_cashboxes", "List cashboxes.", {"limit": "optional int"}),
-            AgentToolDefinition("get_cashbox", "Get one cashbox with transactions.", {"cashbox_id": "required string", "transaction_limit": "optional int"}),
-            AgentToolDefinition("create_cashbox", "Create a cashbox.", {"name": "required string"}),
-            AgentToolDefinition("delete_cashbox", "Delete a cashbox.", {"cashbox_id": "required string"}),
-            AgentToolDefinition(
-                "create_cash_transaction",
-                "Create cashbox income or expense.",
-                {
-                    "cashbox_id": "required string",
-                    "direction": "required string",
-                    "amount": "required number/string",
-                    "note": "optional string",
-                },
-            ),
-            AgentToolDefinition(
-                "decode_vin",
-                "Decode a VIN using external trusted sources.",
+                "research_vin",
+                "Research a VIN on the web and collect source-backed evidence.",
                 {"vin": "required string"},
-            ),
-            AgentToolDefinition(
-                "find_part_numbers",
-                "Find OEM/catalog part numbers with trusted whitelisted sources.",
-                {"query": "required string", "vehicle": "optional string/object", "limit": "optional int"},
-            ),
-            AgentToolDefinition(
-                "search_part_numbers",
-                "Search OEM/catalog part numbers for a vehicle and requested part.",
-                {
-                    "part_query": "required string",
-                    "vehicle_context": "optional object",
-                    "limit": "optional int",
-                },
-            ),
-            AgentToolDefinition(
-                "estimate_price_ru",
-                "Estimate Russian-market part prices from trusted whitelisted sources.",
-                {"part_number": "required string", "vehicle": "optional string/object", "limit": "optional int"},
-            ),
-            AgentToolDefinition(
-                "lookup_part_prices",
-                "Search market prices for a part number or part query.",
-                {
-                    "part_number_or_query": "required string",
-                    "vehicle_context": "optional object",
-                    "limit": "optional int",
-                },
-            ),
-            AgentToolDefinition(
-                "decode_dtc",
-                "Decode an OBD/DTC trouble code using trusted whitelisted sources.",
-                {"code": "required string", "vehicle": "optional string/object", "vehicle_context": "optional object", "limit": "optional int"},
-            ),
-            AgentToolDefinition(
-                "search_fault_info",
-                "Search fault symptoms and repair notes with trusted whitelisted sources.",
-                {"query": "required string", "vehicle": "optional string/object", "vehicle_context": "optional object", "limit": "optional int"},
-            ),
-            AgentToolDefinition(
-                "estimate_maintenance",
-                "Build a preliminary maintenance plan for a vehicle.",
-                {
-                    "service_type": "optional string",
-                    "vehicle_context": "optional object",
-                },
-            ),
-            AgentToolDefinition(
-                "search_web",
-                "Search trusted web sources by free-text query.",
-                {
-                    "query": "required string",
-                    "limit": "optional int",
-                    "allowed_domains": "optional array",
-                },
-            ),
-            AgentToolDefinition(
-                "fetch_page_excerpt",
-                "Fetch and clean a web page excerpt.",
-                {"url": "required string", "max_chars": "optional int"},
             ),
         ]
 
@@ -426,7 +272,16 @@ class AgentToolExecutor:
 
     def _decode_vin(self, args: dict[str, Any]) -> dict[str, Any]:
         self._consume_external_request_budget()
-        return self._automotive.decode_vin(self._required_text(args, "vin"))
+        return self._automotive.research_vin(self._required_text(args, "vin"))
+
+    def _research_vin(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._consume_external_request_budget()
+        vin = self._required_text(args, "vin")
+        return {
+            "vin": vin,
+            "status": "triggered",
+            "research_mode": "web_search",
+        }
 
     def _find_part_numbers(self, args: dict[str, Any]) -> dict[str, Any]:
         self._consume_external_request_budget()
@@ -549,94 +404,9 @@ class AgentToolExecutor:
     def _definition_allowed(self, tool_name: str, *, task_type: str | None, context_kind: str | None) -> bool:
         normalized_type = str(task_type or "").strip().lower()
         normalized_context = str(context_kind or "").strip().lower()
-        all_tools = {item.name for item in self.definitions}
-        core_board = {
-            "ping_connector",
-            "review_board",
-            "list_columns",
-            "get_board_snapshot",
-            "search_cards",
-            "get_card",
-            "get_card_context",
-            "list_repair_orders",
-            "get_repair_order",
-            "list_cashboxes",
-            "get_cashbox",
-        }
-        card_update = {
-            "get_card",
-            "get_card_context",
-            "update_card",
-            "move_card",
-            "archive_card",
-            "restore_card",
-        }
-        repair_order = {
-            "get_repair_order",
-            "update_repair_order",
-            "replace_repair_order_works",
-            "replace_repair_order_materials",
-            "set_repair_order_status",
-        }
-        cashboxes = {
-            "list_cashboxes",
-            "get_cashbox",
-            "create_cashbox",
-            "delete_cashbox",
-            "create_cash_transaction",
-        }
-        automotive = {
-            "decode_vin",
-            "find_part_numbers",
-            "search_part_numbers",
-            "estimate_price_ru",
-            "lookup_part_prices",
-            "decode_dtc",
-            "search_fault_info",
-            "estimate_maintenance",
-            "search_web",
-            "fetch_page_excerpt",
-        }
-
-        if normalized_type == "board_review":
-            allowed = core_board
-        elif normalized_type == "card_cleanup":
-            allowed = core_board | card_update | repair_order | automotive
-        elif normalized_type == "vin_decode":
-            allowed = card_update | {"get_repair_order"} | {"decode_vin", "search_web", "fetch_page_excerpt"}
-        elif normalized_type == "parts_lookup":
-            allowed = card_update | {"get_repair_order"} | {
-                "decode_vin",
-                "find_part_numbers",
-                "search_part_numbers",
-                "estimate_price_ru",
-                "lookup_part_prices",
-                "decode_dtc",
-                "search_fault_info",
-                "search_web",
-                "fetch_page_excerpt",
-            }
-        elif normalized_type == "maintenance_estimate":
-            allowed = card_update | {"get_repair_order"} | {
-                "estimate_maintenance",
-                "search_part_numbers",
-                "lookup_part_prices",
-                "decode_vin",
-            }
-        elif normalized_type == "dtc_lookup":
-            allowed = card_update | {"get_repair_order"} | {
-                "decode_dtc",
-                "search_fault_info",
-                "search_web",
-                "fetch_page_excerpt",
-            }
-        elif normalized_type == "repair_order_assist":
-            allowed = card_update | repair_order | automotive
-        elif normalized_type == "cash_review":
-            allowed = core_board | cashboxes
-        else:
-            allowed = all_tools
-
-        if normalized_context == "card":
-            allowed |= {"get_card_context", "update_card", "get_repair_order"}
+        allowed = {"ping_connector", "get_card", "get_card_context", "update_card", "research_vin"}
+        if normalized_context != "card":
+            allowed = {"ping_connector"}
+        if normalized_type in {"vin_decode", "vin_research"}:
+            allowed |= {"research_vin", "decode_vin", "get_card", "get_card_context", "update_card"}
         return tool_name in allowed

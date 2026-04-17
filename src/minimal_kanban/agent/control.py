@@ -298,24 +298,24 @@ class AgentControlService:
                 launched.append(str(task.get("id", "") or "").strip())
         return {"launched": launched, "meta": {"matched": matched_total}}
 
-    def enqueue_card_autofill_task(
+    def enqueue_card_enrichment_task(
         self,
         payload: dict[str, Any] | None = None,
         *,
-        source: str = "ui_card_autofill",
+        source: str = "ui_card_enrichment",
         trigger: str = "manual",
     ) -> dict[str, Any] | None:
         payload = payload or {}
         card_id = str(payload.get("card_id", "") or "").strip()
         if not card_id:
             raise ValueError("card_id is required")
-        if self._storage.has_active_task_for_card(card_id, purpose="card_autofill"):
+        if self._storage.has_active_task_for_card(card_id, purpose="card_enrichment"):
             return None
-        task_text = str(payload.get("task_text", "") or "").strip() or self._build_card_autofill_prompt(payload)
+        task_text = str(payload.get("task_text", "") or "").strip() or self._build_card_enrichment_prompt(payload)
         metadata = {
-            "requested_by": str(payload.get("requested_by", "") or "autofill").strip() or "autofill",
-            "purpose": "card_autofill",
-            "scenario_id": str(payload.get("scenario_id", "") or "").strip().lower() or "full_card_enrichment",
+            "requested_by": str(payload.get("requested_by", "") or "card_enrichment").strip() or "card_enrichment",
+            "purpose": "card_enrichment",
+            "scenario_id": str(payload.get("scenario_id", "") or "").strip().lower() or "card_enrichment",
             "trigger": str(trigger or "manual").strip() or "manual",
             "context": {
                 "kind": "card",
@@ -326,7 +326,7 @@ class AgentControlService:
                 "card_id": card_id,
                 "card_label": str(payload.get("card_heading", "") or payload.get("title", "") or "").strip(),
             },
-            "card_autofill": {
+            "card_enrichment": {
                 "card_id": card_id,
                 "card_heading": str(payload.get("card_heading", "") or payload.get("title", "") or "").strip(),
                 "vehicle": str(payload.get("vehicle", "") or "").strip(),
@@ -338,9 +338,18 @@ class AgentControlService:
         return self._storage.enqueue_task(
             task_text=task_text,
             source=source,
-            mode="card_autofill",
+            mode="card_enrichment",
             metadata=metadata,
         )
+
+    def enqueue_card_autofill_task(
+        self,
+        payload: dict[str, Any] | None = None,
+        *,
+        source: str = "ui_card_enrichment",
+        trigger: str = "manual",
+    ) -> dict[str, Any] | None:
+        return self.enqueue_card_enrichment_task(payload, source=source, trigger=trigger)
 
     def enqueue_board_control_task(
         self,
@@ -430,7 +439,7 @@ class AgentControlService:
                         if isinstance(item, dict):
                             failed.append({"task_id": str(item.get("card_id", "") or "").strip(), "error": str(item.get("error", "") or "").strip()})
                 except Exception as exc:
-                    failed.append({"task_id": "card_autofill", "error": str(exc)})
+                    failed.append({"task_id": "card_enrichment", "error": str(exc)})
                 try:
                     board_control_payload = self._trigger_board_control(force=force)
                     launched.extend([str(item) for item in board_control_payload.get("launched", []) if str(item or "").strip()])
@@ -1063,21 +1072,21 @@ class AgentControlService:
             return str(scheduled.get("scope_card_id", "") or "").strip() == str(card_id or "").strip()
         return True
 
-    def _build_card_autofill_prompt(self, payload: dict[str, Any]) -> str:
+    def _build_card_enrichment_prompt(self, payload: dict[str, Any]) -> str:
         scenario_id = str(payload.get("scenario_id", "") or "").strip().lower()
         heading = str(payload.get("card_heading", "") or payload.get("title", "") or "").strip()
         vehicle = str(payload.get("vehicle", "") or "").strip()
-        mini_prompt = str(payload.get("prompt", "") or payload.get("ai_autofill_prompt", "") or "").strip()
+        mini_prompt = str(payload.get("prompt", "") or "").strip()
         ai_log_tail = payload.get("ai_log_tail") if isinstance(payload.get("ai_log_tail"), list) else []
         lines = [
-            "Выполни автосопровождение карточки автосервиса.",
-            "Работай только с этой карточкой и не добавляй шум, если полезных изменений нет.",
+            "Выполни карточное обогащение только по текущей карточке.",
+            "Работай только с этой карточкой, без заказ-наряда и без лишних источников.",
             "Сначала прочитай get_card_context.",
-            "Если есть VIN, используй decode_vin и кратко дополни карточку.",
-            "Если есть детали, используй find_part_numbers и estimate_price_ru.",
-            "Если есть DTC-коды, используй decode_dtc.",
-            "Если есть симптомы без кодов, при необходимости используй search_fault_info.",
-            "Обновляй карточку коротко, структурированно и без перезаписи полезного существующего текста.",
+            "Если есть VIN, используй research_vin и кратко дополни карточку и vehicle_profile.",
+            "Не ходи в parts, DTC, maintenance или repair_order.",
+            "Перепиши описание коротко, красиво и структурно.",
+            "Заполни только подтвержденные поля make_display, model_display, production_year, engine_model, gearbox_model, drivetrain и vin.",
+            "Если удалось исследовать VIN, используй source_summary, source_confidence и source_links_or_refs как подтверждающие поля.",
         ]
         if heading:
             lines.append(f"Карточка: {heading}.")
@@ -1085,30 +1094,30 @@ class AgentControlService:
             lines.append(f"Автомобиль: {vehicle}.")
         lines.extend(
             [
-                "Preserve all existing facts, numbers, prices, part numbers, notes, and customer statements.",
+                "Preserve all existing facts, notes, and customer statements.",
+                "Do not invent engine, gearbox, drivetrain, or model data.",
                 "Do not delete useful content just to make the text shorter.",
                 "Only supplement, structure, or carefully rephrase the card.",
-                "Do not repeat the current description verbatim. Return only the net-new AI note or one clean deduplicated rewrite.",
+                "Do not repeat the current description verbatim.",
                 "Write the card update in Russian unless the whole card is clearly in another language.",
                 "Label AI-added notes, comments, or next questions with 'ИИ:' or 'AI:'.",
-                "Treat current vehicle_profile and repair_order fields as known facts. Do not say model, year, engine, gearbox, or drivetrain are missing if they are already filled in the card.",
-                "If VIN decoding gives only generic facts, append only the new confirmed facts and avoid repeating what the card already shows.",
+                "Treat current vehicle_profile fields as known facts.",
+                "If VIN decoding gives only generic facts, append only the new confirmed facts.",
                 "When you update the card, use update_card or apply.update_card.",
             ]
         )
-        if scenario_id == "full_card_enrichment":
-            lines[0] = "Выполни bounded сценарий полного обогащения карточки автосервиса."
-            lines.extend(
-                [
-                    "Follow the bounded contract: read -> evidence -> plan -> tools -> patch -> write -> verify.",
-                    "Do not behave like a free agent, a chat, or a menu of actions.",
-                    "If data is weak or conflicting, keep it out of the main write targets.",
-                ]
-            )
+        lines[0] = "Выполни bounded сценарий карточного обогащения."
+        lines.extend(
+            [
+                "Follow the bounded contract: read -> evidence -> plan -> tools -> patch -> write -> verify.",
+                "Do not behave like a free agent, a chat, or a menu of actions.",
+                "If data is weak or conflicting, keep it out of the main write targets.",
+            ]
+        )
         if mini_prompt:
             lines.append(f"User mini-prompt: {mini_prompt}")
         if ai_log_tail:
-            lines.append("Use the recent autofill feed as continuation context:")
+            lines.append("Use the recent enrichment feed as continuation context:")
             for entry in ai_log_tail[-8:]:
                 if not isinstance(entry, dict):
                     continue
