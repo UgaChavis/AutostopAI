@@ -147,7 +147,7 @@ def get_agent_poll_interval_seconds() -> float:
 
 
 def get_agent_max_steps() -> int:
-    return _env_int("MINIMAL_KANBAN_AGENT_MAX_STEPS", 12, minimum=1)
+    return _env_int("MINIMAL_KANBAN_AGENT_MAX_STEPS", 16, minimum=1)
 
 
 def get_agent_max_tool_result_chars() -> int:

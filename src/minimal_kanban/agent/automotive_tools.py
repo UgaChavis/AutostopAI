@@ -55,6 +55,27 @@ _PART_QUERY_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("аккумулятор", ("battery",)),
 )
 
+_VIN_WMI_MAKE_HINTS: tuple[tuple[str, str], ...] = (
+    ("JTE", "Toyota"),
+    ("JTM", "Toyota"),
+    ("JTD", "Toyota"),
+    ("JT2", "Toyota"),
+    ("JT3", "Toyota"),
+    ("WDC", "Mercedes-Benz"),
+    ("WDB", "Mercedes-Benz"),
+    ("WDD", "Mercedes-Benz"),
+    ("1HG", "Honda"),
+    ("2HG", "Honda"),
+    ("SHH", "Honda"),
+    ("WAU", "Audi"),
+    ("WVW", "Volkswagen"),
+    ("WBA", "BMW"),
+    ("WBS", "BMW"),
+    ("JNK", "Infiniti"),
+    ("JN1", "Nissan"),
+    ("JM1", "Mazda"),
+)
+
 
 class AutomotiveLookupService:
     def __init__(self, *, timeout_seconds: float = 12.0) -> None:
@@ -79,6 +100,16 @@ class AutomotiveLookupService:
 
     def decode_vin(self, vin: str) -> dict[str, Any]:
         return self.research_vin(vin)
+
+    def decode_wmi(self, wmi: str) -> dict[str, Any]:
+        normalized_wmi = str(wmi or "").strip().upper()
+        if len(normalized_wmi) < 3:
+            raise InternetToolError("WMI is required and must be at least 3 characters.")
+        return self._cached_result(
+            "decode_wmi",
+            {"wmi": normalized_wmi[:3]},
+            lambda: self._decode_wmi_uncached(normalized_wmi[:3]),
+        )
 
     def research_vin(self, vin: str, limit: int = 5) -> dict[str, Any]:
         normalized_vin = str(vin or "").strip().upper()
@@ -175,12 +206,38 @@ class AutomotiveLookupService:
             "source_url": url,
         }
 
+    def _decode_wmi_uncached(self, normalized_wmi: str) -> dict[str, Any]:
+        url = "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeWMI/" + quote(normalized_wmi) + "?format=json"
+        try:
+            with httpx.Client(timeout=self._timeout_seconds, headers={"User-Agent": "Mozilla/5.0 AutoStopCRM/1.0"}) as client:
+                response = client.get(url, follow_redirects=True)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise InternetToolError(f"WMI decode failed: {exc}") from exc
+        payload = response.json()
+        results = payload.get("Results") or []
+        row = results[0] if isinstance(results, list) and results else {}
+        if not isinstance(row, dict):
+            row = {}
+        manufacturer = self._text(
+            row.get("CommonName")
+            or row.get("ManufacturerName")
+            or row.get("Manufacturer")
+            or row.get("Make")
+        )
+        return {
+            "wmi": normalized_wmi,
+            "manufacturer": manufacturer,
+            "make": manufacturer,
+            "vehicle_type": self._text(row.get("VehicleType")),
+            "country": self._text(row.get("Country")),
+            "error_code": self._text(row.get("ErrorCode")),
+            "source": "NHTSA vPIC WMI",
+            "source_url": url,
+        }
+
     def _research_vin_uncached(self, normalized_vin: str, *, limit: int) -> dict[str, Any]:
-        queries = [
-            f'"{normalized_vin}" VIN specifications',
-            f'"{normalized_vin}" vehicle specifications engine transmission',
-            f'"{normalized_vin}" make model year',
-        ]
+        queries = self._vin_research_queries(normalized_vin)
         allowed_domains = [
             "vpic.nhtsa.dot.gov",
             "get.vin",
@@ -190,11 +247,24 @@ class AutomotiveLookupService:
             "www.vincheck.info",
             "vehiclehistory.com",
             "www.vehiclehistory.com",
+            "typenscheine.ch",
+            "www.typenscheine.ch",
+            "dauto.ch",
+            "www.dauto.ch",
+            "autoua.com.ua",
+            "www.autoua.com.ua",
+            "zapchast.com.ua",
+            "www.zapchast.com.ua",
+            "7zap.com",
+            "toyota.7zap.com",
         ]
         raw_results: list[dict[str, Any]] = []
         seen_urls: set[str] = set()
         for query in queries:
-            payload = self._search_web_uncached(query=query, limit=limit, allowed_domains=allowed_domains)
+            try:
+                payload = self._search_web_uncached(query=query, limit=limit, allowed_domains=allowed_domains)
+            except InternetToolError:
+                continue
             results = payload.get("results") if isinstance(payload, dict) else []
             if not isinstance(results, list):
                 continue
@@ -226,7 +296,10 @@ class AutomotiveLookupService:
                 break
         if len(raw_results) < max(2, limit // 2):
             for query in queries:
-                payload = self._search_web_uncached(query=query, limit=limit, allowed_domains=[])
+                try:
+                    payload = self._search_web_uncached(query=query, limit=limit, allowed_domains=[])
+                except InternetToolError:
+                    continue
                 results = payload.get("results") if isinstance(payload, dict) else []
                 if not isinstance(results, list):
                     continue
@@ -256,15 +329,124 @@ class AutomotiveLookupService:
                         break
                 if len(raw_results) >= limit:
                     break
+        raw_results = self._dedupe_vin_results(raw_results)
+        wmi_payload = {}
+        try:
+            wmi_payload = self.decode_wmi(normalized_vin[:3])
+        except InternetToolError:
+            wmi_payload = {}
         return {
             "vin": normalized_vin,
+            "wmi": normalized_vin[:3],
+            "wmi_payload": wmi_payload,
             "queries": queries,
             "results": raw_results,
             "source_summary": "Public VIN web research",
-            "source_confidence": 0.0,
+            "source_confidence": self._score_vin_results(raw_results),
             "source_links_or_refs": [item["url"] for item in raw_results if item.get("url")],
             "source": "web_research",
         }
+
+    def _vin_research_queries(self, normalized_vin: str) -> list[str]:
+        vin = str(normalized_vin or "").strip().upper()
+        if len(vin) < 11:
+            return [f'"{vin}" VIN specifications']
+        family_prefixes = [vin[:17], vin[:11], vin[:10], vin[:8], vin[:5]]
+        make_hint = self._guess_make_from_vin(vin)
+        queries = [
+            f'"{vin}" VIN specifications',
+            f'"{vin}" vehicle specifications engine transmission',
+            f'"{vin}" make model year',
+        ]
+        if len(vin) >= 11:
+            queries.extend(
+                [
+                    f'"{vin[:11]}" VIN family homologation',
+                    f'"{vin[:11]}" {make_hint} VIN family' if make_hint else f'"{vin[:11]}" vehicle family',
+                    f'"{vin[:11]}" {make_hint} homologation' if make_hint else f'"{vin[:11]}" homologation',
+                    f'"{vin[:11]}" engine transmission drivetrain',
+                    f'site:typenscheine.ch "{vin[:11]}"',
+                    f'site:dauto.ch "{vin[:11]}"',
+                    f'site:autoua.com.ua "{vin[:11]}"',
+                    f'site:zapchast.com.ua "{vin[:11]}"',
+                    f'site:7zap.com "{vin[:11]}"',
+                ]
+            )
+        if len(vin) >= 10:
+            queries.extend(
+                [
+                    f'"{vin[:10]}" VIN family',
+                    f'"{vin[:10]}" homologation',
+                    f'"{vin[:10]}" {make_hint} vehicle' if make_hint else f'"{vin[:10]}" vehicle',
+                    f'site:typenscheine.ch "{vin[:10]}"',
+                    f'site:dauto.ch "{vin[:10]}"',
+                ]
+            )
+        if len(vin) >= 8:
+            queries.extend(
+                [
+                    f'"{vin[:8]}" {make_hint}' if make_hint else f'"{vin[:8]}" vehicle',
+                    f'"{vin[:8]}" VIN family record',
+                    f'site:typenscheine.ch "{vin[:8]}" {make_hint}' if make_hint else f'site:typenscheine.ch "{vin[:8]}"',
+                    f'site:autoua.com.ua "{vin[:8]}" {make_hint}' if make_hint else f'site:autoua.com.ua "{vin[:8]}"',
+                ]
+            )
+        for prefix in family_prefixes:
+            if prefix and prefix not in queries:
+                queries.append(f'"{prefix}"')
+        return queries
+
+    def _guess_make_from_vin(self, normalized_vin: str) -> str:
+        vin = str(normalized_vin or "").strip().upper()
+        for prefix, make in _VIN_WMI_MAKE_HINTS:
+            if vin.startswith(prefix):
+                return make
+        try:
+            wmi_payload = self.decode_wmi(vin[:3])
+        except InternetToolError:
+            return ""
+        if isinstance(wmi_payload, dict):
+            manufacturer = str(wmi_payload.get("make") or wmi_payload.get("manufacturer") or "").strip()
+            if manufacturer:
+                return manufacturer
+        return ""
+
+    def _dedupe_vin_results(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen_urls: set[str] = set()
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url", "") or "").strip()
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+            deduped.append(item)
+        return deduped
+
+    def _score_vin_results(self, results: list[dict[str, Any]]) -> float:
+        if not results:
+            return 0.0
+        score = 0.0
+        for item in results[:5]:
+            text = " ".join(
+                str(part or "")
+                for part in (
+                    item.get("title"),
+                    item.get("snippet"),
+                    item.get("excerpt"),
+                )
+            ).casefold()
+            if "vin" in text:
+                score += 0.2
+            if "toyota" in text or "land cruiser" in text or "prado" in text:
+                score += 0.15
+            if "homolog" in text or "approval" in text or "typenschein" in text:
+                score += 0.2
+            if "engine" in text or "motor" in text or "transmission" in text or "gearbox" in text or "4wd" in text or "awd" in text:
+                score += 0.1
+        return round(min(1.0, score), 2)
 
     def _search_part_numbers_uncached(self, *, context: dict[str, Any], normalized_query: str, limit: int) -> dict[str, Any]:
         query_variants = self._expand_part_query_variants(normalized_query)

@@ -14,6 +14,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from minimal_kanban.agent.config import get_agent_openai_api_key, get_agent_openai_model
+from minimal_kanban.agent.automotive_tools import AutomotiveLookupService
 from minimal_kanban.agent.openai_client import AgentModelError, OpenAIJsonAgentClient
 from minimal_kanban.agent.policy import ToolPolicyEngine
 from minimal_kanban.agent.router import AgentTaskRouter
@@ -93,9 +94,20 @@ def _check_vin(vin: str) -> dict[str, Any]:
             ],
         )
         decoded = _parse_json_text(evidence_brief)
+        try:
+            local_payload = AutomotiveLookupService().research_vin(vin, limit=4)
+        except Exception:
+            local_payload = {}
     except AgentModelError as exc:
         return {"ok": False, "error": str(exc)}
-    patch = build_vehicle_profile_patch_from_vin_research(decoded, current_vin=vin)
+    merged = dict(decoded)
+    if isinstance(local_payload, dict) and local_payload:
+        if not merged.get("wmi_payload") and isinstance(local_payload.get("wmi_payload"), dict):
+            merged["wmi_payload"] = dict(local_payload["wmi_payload"])
+        for key in ("source_summary", "source_confidence", "source_links_or_refs"):
+            if not merged.get(key) and local_payload.get(key):
+                merged[key] = local_payload.get(key)
+    patch = build_vehicle_profile_patch_from_vin_research(merged, current_vin=vin)
     return {"ok": True, "vin": vin.upper(), "decoded": decoded, "vehicle_profile_patch": patch}
 
 

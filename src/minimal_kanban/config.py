@@ -28,7 +28,7 @@ ATTACHMENTS_DIR_NAME = "attachments"
 DEFAULT_OPENAI_PROVIDER = "openai"
 DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_REQUEST_TIMEOUT_SECONDS = 120
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 180
 
 
 def get_app_data_dir() -> Path:

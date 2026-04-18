@@ -2,6 +2,7 @@ from __future__ import annotations
 
 __all__ = [
     "automotive_tools",
+    "bridge",
     "contracts",
     "config",
     "control",

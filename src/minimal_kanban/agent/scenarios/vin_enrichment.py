@@ -5,7 +5,38 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...vehicle_profile import build_vehicle_profile_patch_from_vin_research, normalize_vehicle_notes
+from ..automotive_tools import AutomotiveLookupService, InternetToolError
 from .base import ScenarioContext, ScenarioExecutionResult
+
+
+VIN_RESEARCH_ALLOWED_DOMAINS: tuple[str, ...] = (
+    "vpic.nhtsa.dot.gov",
+    "get.vin",
+    "www.vindecoderz.com",
+    "vindecoderz.com",
+    "vininfo.eu",
+    "autodetective.com",
+    "api.vin",
+    "www.api.vin",
+    "dataonesoftware.com",
+    "www.dataonesoftware.com",
+    "decodevin.pro",
+    "www.decodevin.pro",
+    "auto.vin",
+    "www.auto.vin",
+    "duckdecode.com",
+    "www.duckdecode.com",
+    "vincario.com",
+    "www.vincario.com",
+    "typenscheine.ch",
+    "www.typenscheine.ch",
+    "dauto.ch",
+    "www.dauto.ch",
+    "autoua.com.ua",
+    "www.autoua.com.ua",
+    "zapchast.com.ua",
+    "www.zapchast.com.ua",
+)
 
 
 def _parse_json_text(value: str) -> dict[str, Any]:
@@ -100,10 +131,31 @@ class VinEnrichmentScenarioExecutor:
                     followup_reason="vin_research_failed",
                 )
             research_payload = runtime._response_data(research_tool_payload) or research_tool_payload
-            runtime._store_vin_cache_entry(vin, research_payload)
 
-        research_result = self._synthesize_vin_research(runtime=runtime, context=context, research_payload=research_payload)
+        local_research_payload = self._prefetch_local_vin_research(vin)
+        if local_research_payload:
+            research_payload = self._merge_research_payloads(research_payload, local_research_payload)
+
+        runtime._store_vin_cache_entry(vin, research_payload)
+
+        research_result = self._synthesize_vin_research(
+            runtime=runtime,
+            context=context,
+            research_payload=research_payload,
+            search_mode="exact",
+        )
         research_status = self._vin_research_status(research_result)
+        if research_status != "success":
+            fallback_result = self._synthesize_vin_research(
+                runtime=runtime,
+                context=context,
+                research_payload=research_payload,
+                search_mode="family",
+            )
+            fallback_status = self._vin_research_status(fallback_result)
+            if self._is_richer_vin_result(fallback_result, research_result):
+                research_result = fallback_result
+                research_status = fallback_status
         facts["vin_research_status"] = research_status
         facts["vin_decode_status"] = research_status  # compatibility with legacy runtime checks
         if isinstance(facts.get("evidence_model"), dict):
@@ -158,11 +210,20 @@ class VinEnrichmentScenarioExecutor:
         runtime: Any,
         context: ScenarioContext,
         research_payload: dict[str, Any],
+        search_mode: str,
     ) -> dict[str, Any]:
         card = context.facts.get("card") if isinstance(context.facts.get("card"), dict) else {}
         vehicle_profile = context.facts.get("vehicle_profile") if isinstance(context.facts.get("vehicle_profile"), dict) else {}
+        vin = str(context.facts.get("vin", "") or "").strip().upper()
         prompt_payload = {
-            "vin": context.facts.get("vin", ""),
+            "vin": vin,
+            "search_mode": search_mode,
+            "search_plan": {
+                "step_1": "search exact VIN",
+                "step_2": "search VIN prefix family and homologation records",
+                "step_3": "cross-check family-level engine/transmission/drivetrain only if the exact VIN remains unavailable",
+            },
+            "evidence_digest": self._build_local_evidence_digest(research_payload),
             "card": {
                 "title": card.get("title", ""),
                 "description": card.get("description", ""),
@@ -172,30 +233,29 @@ class VinEnrichmentScenarioExecutor:
         system_prompt = "\n".join(
             [
                 "You are an automotive VIN research specialist.",
-                "Use the web_search tool to research this exact VIN on the internet and cross-check multiple sources when possible.",
-                "Prefer sources that explicitly mention the VIN, year, make, model, engine, gearbox, and drivetrain.",
-                "Do not invent missing facts, but do not be overly conservative: if the VIN clearly maps to a vehicle, return status success with the strongest confirmed facts.",
-                "Only return status insufficient when the VIN cannot be tied to a vehicle with reasonable confidence.",
+                "Use the web_search tool to research the VIN on the internet and cross-check multiple sources when possible.",
+                "If search_mode is exact, search the exact VIN first.",
+                "If search_mode is family, use local_research as the primary evidence pack and search the VIN prefix family, homologation pages, and nearby serial family records for the same platform.",
+                "If local_research includes a WMI or manufacturer hint, use it to guide brand-level searching even when the exact VIN is unavailable.",
+                "Prefer sources that explicitly mention the VIN, year, make, model, engine, gearbox, drivetrain, plant, displacement, or homologation family.",
+                "Aim to return the strongest defensible result rather than an empty partial. If the exact VIN is not confirmed, return the best family-level or WMI-level match you can support from the evidence.",
+                "When evidence_digest shows confirmed family data, use it to fill make, model, model_year, drivetrain, engine_model, gearbox_model, and plant_country if the evidence explicitly supports those fields.",
+                "When evidence_digest shows a WMI manufacturer hint, you may use that as a brand clue for family-level research and include it in the final answer.",
+                "Prefer a useful best-effort answer with clear warnings over a blank result.",
+                "Do not invent missing facts; if a field is not supported, leave it blank.",
                 "Return exactly one JSON object with keys: vin, status, make, model, model_year, engine_model, transmission, drive_type, plant_country, source_summary, source_confidence, source_links_or_refs, oem_notes, description_line, vehicle_label, warnings.",
             ]
         )
         research_text = runtime._model_client.complete_text(
             instructions=system_prompt,
             messages=[{"role": "user", "content": json.dumps(prompt_payload, ensure_ascii=False)}],
-            reasoning_effort="low",
+            reasoning_effort="high",
             tools=[
                 {
                     "type": "web_search",
-                    "search_context_size": "low",
+                    "search_context_size": "high",
                     "filters": {
-                        "allowed_domains": [
-                            "vpic.nhtsa.dot.gov",
-                            "get.vin",
-                            "www.vindecoderz.com",
-                            "vindecoderz.com",
-                            "vininfo.eu",
-                            "autodetective.com",
-                        ]
+                        "allowed_domains": list(VIN_RESEARCH_ALLOWED_DOMAINS),
                     },
                 }
             ],
@@ -207,7 +267,108 @@ class VinEnrichmentScenarioExecutor:
         normalized.setdefault("source_confidence", research_payload.get("source_confidence", 0.0))
         normalized.setdefault("source_links_or_refs", research_payload.get("source_links_or_refs", []))
         normalized.setdefault("warnings", [])
+        wmi_payload = research_payload.get("wmi_payload") if isinstance(research_payload.get("wmi_payload"), dict) else {}
+        if isinstance(wmi_payload, dict):
+            wmi_make = str(wmi_payload.get("make") or wmi_payload.get("manufacturer") or "").strip()
+            if wmi_make and not str(normalized.get("make", "") or "").strip():
+                normalized["make"] = wmi_make
+                warnings = normalized["warnings"] if isinstance(normalized.get("warnings"), list) else []
+                if not isinstance(normalized.get("warnings"), list):
+                    normalized["warnings"] = warnings
+                warnings.append("Manufacturer inferred from NHTSA DecodeWMI; exact VIN decode was not confirmed.")
+                if not str(normalized.get("source_summary", "") or "").strip():
+                    normalized["source_summary"] = "NHTSA DecodeWMI manufacturer hint"
+                source_links = normalized.get("source_links_or_refs")
+                if isinstance(source_links, list):
+                    source_url = str(wmi_payload.get("source_url", "") or "").strip()
+                    if source_url and source_url not in source_links:
+                        source_links.insert(0, source_url)
+            wmi_country = str(wmi_payload.get("country") or "").strip()
+            if wmi_country and not str(normalized.get("plant_country", "") or "").strip():
+                normalized["plant_country"] = wmi_country
+            if wmi_make and not str(normalized.get("vehicle_label", "") or "").strip():
+                normalized["vehicle_label"] = wmi_make
         return normalized
+
+    def _build_local_evidence_digest(self, research_payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(research_payload, dict):
+            return {}
+        results = research_payload.get("results") if isinstance(research_payload.get("results"), list) else []
+        digest_items: list[dict[str, Any]] = []
+        for item in results[:4]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "") or "").strip()
+            snippet = str(item.get("snippet", "") or "").strip()
+            excerpt = str(item.get("excerpt", "") or item.get("page_excerpt", "") or "").strip()
+            url = str(item.get("url", "") or "").strip()
+            if not any((title, snippet, excerpt, url)):
+                continue
+            digest_items.append(
+                {
+                    "title": title[:180],
+                    "snippet": snippet[:240],
+                    "excerpt": excerpt[:360],
+                    "url": url,
+                    "domain": str(item.get("domain", "") or "").strip(),
+                }
+            )
+        return {
+            "source_summary": str(research_payload.get("source_summary", "") or "local VIN web research"),
+            "source_confidence": research_payload.get("source_confidence", 0.0),
+            "source_links_or_refs": research_payload.get("source_links_or_refs", []),
+            "wmi": research_payload.get("wmi_payload") if isinstance(research_payload.get("wmi_payload"), dict) else {},
+            "results": digest_items,
+        }
+
+    def _prefetch_local_vin_research(self, vin: str) -> dict[str, Any]:
+        try:
+            service = AutomotiveLookupService()
+            payload = service.research_vin(vin, limit=6)
+        except InternetToolError:
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        results = payload.get("results") if isinstance(payload.get("results"), list) else []
+        links = payload.get("source_links_or_refs") if isinstance(payload.get("source_links_or_refs"), list) else []
+        wmi_payload = payload.get("wmi_payload") if isinstance(payload.get("wmi_payload"), dict) else {}
+        if not results and not links and not wmi_payload:
+            return {}
+        return payload
+
+    def _merge_research_payloads(self, primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(primary, dict):
+            return dict(secondary) if isinstance(secondary, dict) else {}
+        if not isinstance(secondary, dict):
+            return dict(primary)
+        merged = dict(primary)
+        for key in ("results", "queries"):
+            if not merged.get(key) and secondary.get(key):
+                merged[key] = secondary.get(key)
+        for key in ("source_summary", "source_confidence", "source_links_or_refs", "source"):
+            if not merged.get(key) and secondary.get(key):
+                merged[key] = secondary.get(key)
+        return merged
+
+    def _is_richer_vin_result(self, candidate: dict[str, Any], current: dict[str, Any]) -> bool:
+        candidate_score = self._vin_result_score(candidate)
+        current_score = self._vin_result_score(current)
+        return candidate_score > current_score
+
+    def _vin_result_score(self, payload: dict[str, Any] | None) -> int:
+        if not isinstance(payload, dict):
+            return 0
+        score = 0
+        for key in ("make", "model", "model_year", "engine_model", "transmission", "drive_type", "plant_country", "description_line", "vehicle_label"):
+            if str(payload.get(key, "") or "").strip():
+                score += 1
+        sources = payload.get("source_links_or_refs") if isinstance(payload.get("source_links_or_refs"), list) else []
+        score += min(len([item for item in sources if str(item or "").strip()]), 3)
+        if str(payload.get("status", "") or "").strip().lower() == "success":
+            score += 4
+        elif str(payload.get("status", "") or "").strip().lower().startswith("partial"):
+            score += 2
+        return score
 
     def _vin_research_status(self, payload: dict[str, Any] | None) -> str:
         if not isinstance(payload, dict):
@@ -215,8 +376,8 @@ class VinEnrichmentScenarioExecutor:
         status = str(payload.get("status", "") or "").strip().lower()
         if status in {"success", "ok", "confirmed"}:
             return "success"
-        if status in {"insufficient", "partial", "partial_success"}:
+        if status.startswith("partial") or status in {"insufficient", "partial", "partial_success", "family", "approx", "estimated"}:
             return "insufficient"
         if any(str(payload.get(key, "") or "").strip() for key in ("make", "model", "model_year", "engine_model", "transmission", "drive_type", "plant_country")):
-            return "success"
+            return "insufficient"
         return "failed"

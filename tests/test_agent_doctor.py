@@ -115,7 +115,8 @@ class AgentDoctorTests(unittest.TestCase):
 
         with patch.object(agent_doctor, "get_agent_openai_api_key", return_value="key"):
             with patch.object(agent_doctor, "OpenAIJsonAgentClient", DummyClient):
-                report = agent_doctor._check_vin("1HGCM82633A004352")
+                with patch.object(agent_doctor.AutomotiveLookupService, "research_vin", return_value={}):
+                    report = agent_doctor._check_vin("1HGCM82633A004352")
 
         self.assertTrue(report["ok"])
         self.assertEqual(report["vehicle_profile_patch"]["make_display"], "HONDA")

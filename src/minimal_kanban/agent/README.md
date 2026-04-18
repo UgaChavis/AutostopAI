@@ -11,6 +11,7 @@ For the working logic, read the main runbook:
 - `control.py` enqueues `card_enrichment` tasks from the green button.
 - `runner.py` executes the card-only orchestration loop.
 - `router.py` routes card enrichment to `vin_enrichment`.
+- `bridge.py` pins the minimal bridge payloads and response shape.
 - `scenarios/vin_enrichment.py` performs VIN web research and synthesis.
 - `vehicle_profile.py` normalizes VIN research output into CRM-ready fields.
 - `storage.py` keeps runtime state and the local VIN cache.

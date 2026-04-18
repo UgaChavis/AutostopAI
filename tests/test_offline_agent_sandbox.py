@@ -122,6 +122,58 @@ class OfflineAgentSandboxTests(unittest.TestCase):
         self.assertIn("По VIN подтверждено", merged)
         self.assertIn("ИИ:", merged)
 
+    def test_partial_vin_research_keeps_useful_patch_without_injecting_vin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="autostopai-test-") as temp_dir:
+            storage = AgentStorage(base_dir=Path(temp_dir))
+            runner = AgentRunner(
+                storage=storage,
+                board_api=OfflineBoardApiClient(),
+                model_client=NullModelClient(),
+                logger=logging.getLogger("autostopai.test"),
+            )
+            facts = {
+                "card": {
+                    "id": "card-1",
+                    "title": "VIN bridge test",
+                    "description": "VIN: JTEBU3FJX05027767",
+                    "vehicle": "",
+                },
+                "vehicle_profile": {},
+                "vehicle_context": {},
+                "vin": "JTEBU3FJX05027767",
+                "vin_research_status": "insufficient",
+            }
+            orchestration_results = {
+                "vin_research": {
+                    "status": "partial",
+                    "make": "Toyota",
+                    "model": "Land Cruiser 4.0",
+                    "model_year": "2013",
+                    "drive_type": "AWD",
+                    "source_summary": "VIN web research",
+                    "source_confidence": 0.58,
+                    "source_links_or_refs": ["https://example.com/vin"],
+                    "oem_notes": "family-level evidence only",
+                }
+            }
+
+            update_args, display_sections = runner._compose_card_autofill_update(
+                card_id="card-1",
+                facts=facts,
+                orchestration_results=orchestration_results,
+            )
+
+        self.assertIsNotNone(update_args)
+        self.assertEqual(update_args["card_id"], "card-1")
+        self.assertEqual(update_args.get("vehicle"), "Toyota Land Cruiser 4.0 2013")
+        self.assertIn("vehicle_profile", update_args)
+        self.assertEqual(update_args["vehicle_profile"].get("make_display"), "Toyota")
+        self.assertEqual(update_args["vehicle_profile"].get("model_display"), "Land Cruiser 4.0")
+        self.assertEqual(update_args["vehicle_profile"].get("production_year"), 2013)
+        self.assertEqual(update_args["vehicle_profile"].get("drivetrain"), "AWD")
+        self.assertNotIn("vin", update_args["vehicle_profile"])
+        self.assertTrue(any("семейство" in item.lower() for section in display_sections for item in section.get("items", []) if isinstance(item, str)))
+
 
 if __name__ == "__main__":
     unittest.main()

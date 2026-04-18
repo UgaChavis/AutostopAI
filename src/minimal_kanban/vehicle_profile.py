@@ -289,6 +289,7 @@ def _build_vehicle_profile_patch_from_vin_payload(
     current_vin: str = "",
     source_label: str = "VIN research",
     source_key: str = "vin_research",
+    include_vin: bool = False,
 ) -> dict[str, Any]:
     if not isinstance(vin_payload, dict):
         return {}
@@ -306,7 +307,8 @@ def _build_vehicle_profile_patch_from_vin_payload(
         field_sources[field_name] = source_key
 
     vin_value = normalize_vehicle_text(vin_payload.get("vin") or current_vin, limit=17)
-    _set_if_missing("vin", vin_value)
+    if include_vin:
+        _set_if_missing("vin", vin_value)
     _set_if_missing("make_display", vin_payload.get("make"))
     _set_if_missing("model_display", vin_payload.get("model"))
     if not str(existing.get("production_year", "") or "").strip():
@@ -321,6 +323,18 @@ def _build_vehicle_profile_patch_from_vin_payload(
     _set_if_missing("engine_model", vin_payload.get("engine_model"))
     _set_if_missing("gearbox_model", vin_payload.get("transmission"))
     _set_if_missing("drivetrain", vin_payload.get("drive_type"))
+    wmi_payload = vin_payload.get("wmi_payload") if isinstance(vin_payload.get("wmi_payload"), dict) else {}
+    if isinstance(wmi_payload, dict):
+        wmi_make = wmi_payload.get("make") or wmi_payload.get("manufacturer")
+        wmi_country = wmi_payload.get("country")
+        if not str(existing.get("make_display", "") or "").strip():
+            _set_if_missing("make_display", wmi_make)
+        if not str(existing.get("plant_country", "") or "").strip() and wmi_country:
+            text = _strip_markdown_links(wmi_country)
+            if text:
+                patch["plant_country"] = text
+                autofilled_fields.append("plant_country")
+                field_sources["plant_country"] = source_key
     if not patch:
         return {}
     source_url = _normalize_source_reference(vin_payload.get("source_url", ""))
@@ -356,6 +370,7 @@ def build_vehicle_profile_patch_from_vin_decode(
         current_vin=current_vin,
         source_label="official VIN decode",
         source_key="official_vin_decode_nhtsa",
+        include_vin=True,
     )
 
 
@@ -364,6 +379,7 @@ def build_vehicle_profile_patch_from_vin_research(
     *,
     existing_profile: dict[str, Any] | None = None,
     current_vin: str = "",
+    include_vin: bool = False,
 ) -> dict[str, Any]:
     return _build_vehicle_profile_patch_from_vin_payload(
         vin_research,
@@ -371,6 +387,7 @@ def build_vehicle_profile_patch_from_vin_research(
         current_vin=current_vin,
         source_label="VIN web research",
         source_key="vin_web_research",
+        include_vin=include_vin,
     )
 
 

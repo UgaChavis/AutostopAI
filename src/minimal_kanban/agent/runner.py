@@ -1286,18 +1286,17 @@ class AgentRunner:
         scenario_chain = [str(item or "").strip().lower() for item in plan.scenario_chain if str(item or "").strip()]
         if "vin_enrichment" in scenario_chain and str(facts.get("vin", "") or "").strip():
             vin_status = str(facts.get("vin_research_status", facts.get("vin_decode_status", "")) or "").strip().lower()
-            if vin_status == "insufficient":
-                warnings.append("vin enrichment blocked by sparse web research output")
-                scenario_completed = False
-                needs_followup = bool(plan.followup_policy.get("enabled"))
-                followup_reason = followup_reason or "vin_research_insufficient"
-                outcome_state = "blocked_missing_source_data"
-            elif vin_status == "failed":
+            if vin_status == "failed":
                 warnings.append("vin enrichment failed before confirmed vehicle facts were produced")
                 scenario_completed = False
                 needs_followup = bool(plan.followup_policy.get("enabled"))
                 followup_reason = followup_reason or "vin_research_failed"
                 outcome_state = "blocked_missing_source_data"
+            elif vin_status == "insufficient":
+                warnings.append("vin enrichment returned partial VIN/WMI evidence and was accepted as best-effort")
+                scenario_completed = True
+                needs_followup = False
+                outcome_state = "completed_best_effort"
         return VerifyResult(
             applied_ok=bool(verify.applied_ok),
             fields_changed=list(verify.fields_changed),
@@ -2183,13 +2182,13 @@ class AgentRunner:
         vehicle_patch = self._autofill_vehicle_patch(facts=facts, vin_payload=vin_payload, vin_research_status=vin_research_status)
         vehicle_label_patch = self._autofill_vehicle_label_patch(facts=facts, vin_payload=vin_payload, vin_research_status=vin_research_status)
         ai_lines: list[str] = []
-        if vin_research_status == "success" and isinstance(vin_payload, dict):
+        if vin_research_status in {"success", "insufficient"} and isinstance(vin_payload, dict):
             vin_bits: list[str] = []
-            if vin_payload.get("make"):
+            if vin_payload.get("make") and "make_display" in vehicle_patch:
                 vin_bits.append(str(vin_payload.get("make", "") or "").strip())
-            if vin_payload.get("model"):
+            if vin_payload.get("model") and "model_display" in vehicle_patch:
                 vin_bits.append(str(vin_payload.get("model", "") or "").strip())
-            if vin_payload.get("model_year"):
+            if vin_payload.get("model_year") and "production_year" in vehicle_patch:
                 vin_bits.append(str(vin_payload.get("model_year", "") or "").strip())
             if vin_payload.get("engine_model") and "engine_model" in vehicle_patch:
                 vin_bits.append(f"двигатель: {vin_payload.get('engine_model')}")
@@ -2197,10 +2196,17 @@ class AgentRunner:
                 vin_bits.append(f"КПП: {vin_payload.get('transmission')}")
             if vin_payload.get("drive_type") and "drivetrain" in vehicle_patch:
                 vin_bits.append(f"привод: {vin_payload.get('drive_type')}")
-            if vin_payload.get("plant_country"):
+            if vin_payload.get("plant_country") and vin_research_status == "success":
                 vin_bits.append(f"сборка: {vin_payload.get('plant_country')}")
             if vin_bits:
-                ai_lines.append("По VIN подтверждено: " + ", ".join(vin_bits) + ".")
+                if vin_research_status == "success":
+                    ai_lines.append("По VIN подтверждено: " + ", ".join(vin_bits) + ".")
+                elif len(vin_bits) == 1:
+                    ai_lines.append("По WMI подтвержден производитель: " + vin_bits[0] + ".")
+                else:
+                    ai_lines.append("По VIN найдено семейство и частичные данные: " + ", ".join(vin_bits) + ".")
+            elif vehicle_label_patch and vin_research_status == "insufficient":
+                ai_lines.append(f"По VIN найдено семейство: {vehicle_label_patch}.")
         elif facts.get("vin") and (facts.get("vin_research_attempted") or facts.get("vin_decode_attempted")):
             if vin_research_status == "insufficient":
                 ai_lines.append("Найден VIN, выполнено веб-исследование, но данных недостаточно для уверенного заполнения модели и агрегатов.")
@@ -2243,7 +2249,7 @@ class AgentRunner:
         return update_args, display_sections
 
     def _autofill_vehicle_label_patch(self, *, facts: dict[str, Any], vin_payload: dict[str, Any] | None, vin_research_status: str = "") -> str:
-        if vin_research_status != "success":
+        if vin_research_status not in {"success", "insufficient"}:
             return ""
         current_vehicle = str(facts["card"].get("vehicle", "") or "").strip()
         context = facts.get("vehicle_context") if isinstance(facts.get("vehicle_context"), dict) else {}
@@ -2273,12 +2279,13 @@ class AgentRunner:
         return candidate
 
     def _autofill_vehicle_patch(self, *, facts: dict[str, Any], vin_payload: dict[str, Any] | None, vin_research_status: str = "") -> dict[str, Any]:
-        if not isinstance(vin_payload, dict) or vin_research_status != "success":
+        if not isinstance(vin_payload, dict) or vin_research_status not in {"success", "insufficient"}:
             return {}
         return build_vehicle_profile_patch_from_vin_research(
             vin_payload,
             existing_profile=facts["vehicle_profile"],
             current_vin=facts["vin"],
+            include_vin=vin_research_status == "success",
         )
 
     def _compose_vehicle_profile_oem_notes(
@@ -2291,7 +2298,7 @@ class AgentRunner:
         notes: list[str] = []
         vin_payload = self._vin_research_payload(orchestration_results)
         vin_research_status = str(facts.get("vin_research_status", facts.get("vin_decode_status", "")) or "").strip().lower()
-        if vin_research_status == "success" and isinstance(vin_payload, dict):
+        if vin_research_status in {"success", "insufficient"} and isinstance(vin_payload, dict):
             vin_bits: list[str] = []
             for label, key in (
                 ("марка", "make"),
@@ -2305,7 +2312,8 @@ class AgentRunner:
                 if value:
                     vin_bits.append(f"{label}: {value}")
             if vin_bits:
-                notes.append("VIN research: " + "; ".join(vin_bits[:5]) + ".")
+                note_prefix = "VIN research" if vin_research_status == "success" else "VIN research (partial)"
+                notes.append(f"{note_prefix}: " + "; ".join(vin_bits[:5]) + ".")
         unique_notes = [line for line in notes if self._line_has_new_information(current_oem_notes, line)]
         if not unique_notes:
             return ""
@@ -2393,7 +2401,7 @@ class AgentRunner:
         vin_status = str(facts.get("vin_research_status", facts.get("vin_decode_status", "")) or "").strip().lower()
         if facts.get("vin") and (facts.get("vin_research_attempted") or facts.get("vin_decode_attempted")):
             if vin_status == "insufficient":
-                return "Веб-исследование VIN выполнено, но данных недостаточно для уверенного обновления."
+                return "Карточка дополнена по VIN/WMI best-effort."
             if vin_status == "failed":
                 return "Веб-исследование VIN не вернуло пригодный результат."
         if any(self._is_budget_exceeded_payload(payload) for payload in orchestration_results.values() if isinstance(payload, dict)):

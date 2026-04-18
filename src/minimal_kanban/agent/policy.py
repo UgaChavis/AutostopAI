@@ -77,7 +77,7 @@ class ToolPolicyEngine:
             forbidden_write_targets=[],
             stop_conditions=stop_conditions,
             followup_policy=followup_policy,
-            confidence_mode="confirmed_only",
+            confidence_mode="best_effort",
             write_mode="patch_only",
             notes=list(notes or []),
         )
