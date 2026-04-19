@@ -427,7 +427,7 @@ class VinEnrichmentScenarioExecutor:
             ]
             if summary_bits:
                 prefix = "По VIN подтверждено: " if research_status == "success" else "По VIN выполнено best-effort исследование: "
-                description_line = prefix + ", ".join(summary_bits[:4])
+                description_line = prefix + ", ".join(summary_bits)
             else:
                 description_line = "По VIN выполнено best-effort исследование"
         if description_line:

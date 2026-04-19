@@ -145,7 +145,7 @@ def _normalize_vehicle_profile_patch(payload: dict[str, Any]) -> dict[str, Any]:
     drivetrain = normalize_vehicle_text(payload.get("drivetrain"), limit=80)
     if drivetrain:
         normalized["drivetrain"] = drivetrain
-    source_summary = normalize_vehicle_text(payload.get("source_summary"), limit=120)
+    source_summary = normalize_vehicle_text(payload.get("source_summary"), limit=500)
     if source_summary:
         normalized["source_summary"] = source_summary
     source_confidence = normalize_source_confidence(payload.get("source_confidence"))
