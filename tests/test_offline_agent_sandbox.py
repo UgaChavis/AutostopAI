@@ -16,6 +16,7 @@ from minimal_kanban.agent.router import AgentTaskRouter
 from minimal_kanban.agent.sandbox import OfflineAgentSandbox, SandboxCard
 from minimal_kanban.agent.runner import AgentRunner
 from minimal_kanban.agent.sandbox import NullModelClient, OfflineBoardApiClient
+from minimal_kanban.agent.scenarios.base import ScenarioExecutionResult
 from minimal_kanban.agent.storage import AgentStorage
 
 
@@ -173,6 +174,67 @@ class OfflineAgentSandboxTests(unittest.TestCase):
         self.assertEqual(update_args["vehicle_profile"].get("drivetrain"), "AWD")
         self.assertNotIn("vin", update_args["vehicle_profile"])
         self.assertTrue(any("семейство" in item.lower() for section in display_sections for item in section.get("items", []) if isinstance(item, str)))
+
+    def test_scenario_patch_triggers_update_card_writeback(self) -> None:
+        class PatchOnlyExecutor:
+            scenario_id = "vin_enrichment"
+
+            def execute(self, context):
+                del context
+                return ScenarioExecutionResult(
+                    scenario_id=self.scenario_id,
+                    status="success",
+                    patch={
+                        "description": "По VIN подтверждено: Toyota, Land Cruiser 4.0.",
+                        "vehicle": "Toyota Land Cruiser 4.0",
+                        "vehicle_profile": {
+                            "make_display": "Toyota",
+                            "model_display": "Land Cruiser 4.0",
+                            "production_year": 2013,
+                            "drivetrain": "AWD",
+                        },
+                    },
+                )
+
+        with tempfile.TemporaryDirectory(prefix="autostopai-test-") as temp_dir:
+            storage = AgentStorage(base_dir=Path(temp_dir))
+            runner = AgentRunner(
+                storage=storage,
+                board_api=OfflineBoardApiClient(),
+                model_client=NullModelClient(),
+                logger=logging.getLogger("autostopai.test"),
+            )
+            runner._scenario_registry.register(PatchOnlyExecutor())
+            runner._board_api.seed_card(
+                SandboxCard(
+                    id="card-1",
+                    title="VIN bridge test",
+                    description="Проверить запись из scenario patch.",
+                )
+            )
+            runner._storage.enqueue_task(
+                task_text="Обогати карточку по VIN.",
+                source="sandbox",
+                mode="card_enrichment",
+                metadata={
+                    "purpose": "card_enrichment",
+                    "context": {"kind": "card", "card_id": "card-1"},
+                    "card_enrichment": {"card_id": "card-1", "card_heading": "VIN bridge test"},
+                },
+            )
+
+            processed = runner.run_once()
+            snapshot = {
+                "card": runner._board_api.cards["card-1"].to_dict(),
+                "calls": list(runner._board_api.calls),
+                "tasks": runner._storage.list_tasks(limit=20),
+            }
+
+        self.assertTrue(processed)
+        self.assertTrue(any(call["method"] == "update_card" for call in snapshot["calls"]))
+        self.assertEqual(snapshot["card"]["vehicle"], "Toyota Land Cruiser 4.0")
+        self.assertEqual(snapshot["card"]["vehicle_profile"]["make_display"], "Toyota")
+        self.assertEqual(snapshot["tasks"][0]["status"], "completed")
 
 
 if __name__ == "__main__":

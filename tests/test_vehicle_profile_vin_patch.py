@@ -100,6 +100,40 @@ class VehicleProfileVinPatchTests(unittest.TestCase):
         self.assertEqual(patch["make_display"], "Toyota")
         self.assertEqual(patch["plant_country"], "Japan")
 
+    def test_autofilled_fields_do_not_duplicate_when_wmi_refills_make(self) -> None:
+        patch = build_vehicle_profile_patch_from_vin_research(
+            {
+                "status": "partial",
+                "make": "Toyota",
+                "wmi_payload": {
+                    "make": "Toyota",
+                    "manufacturer": "Toyota",
+                    "country": "Japan",
+                },
+            },
+            current_vin="JTEBU3FJX05027767",
+        )
+
+        self.assertEqual(patch["make_display"], "Toyota")
+        self.assertEqual(patch["plant_country"], "Japan")
+        self.assertEqual(patch["autofilled_fields"].count("make_display"), 1)
+        self.assertEqual(len(patch["autofilled_fields"]), len(set(patch["autofilled_fields"])))
+
+    def test_sparse_research_still_emits_best_effort_patch(self) -> None:
+        executor = VinEnrichmentScenarioExecutor()
+        patch = executor._build_card_patch(
+            facts={"vin": "JTEBU3FJX05027767", "vehicle_profile": {}},
+            research_result={"warnings": ["Sparse VIN search"]},
+            research_status="insufficient",
+        )
+
+        self.assertIn("description", patch)
+        self.assertTrue(patch["description"].startswith("По VIN выполнено best-effort исследование"))
+        self.assertIn("vehicle_profile", patch)
+        self.assertEqual(patch["vehicle_profile"]["source_summary"], "VIN web research")
+        self.assertIn("raw_input_text", patch["vehicle_profile"])
+        self.assertEqual(patch["vehicle_profile"]["warnings"], ["Sparse VIN search"])
+
     def test_vin_research_queries_include_family_sources(self) -> None:
         service = AutomotiveLookupService()
         queries = service._vin_research_queries("JTEBU3FJX05027767")

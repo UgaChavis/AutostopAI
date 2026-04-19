@@ -9,6 +9,7 @@ from typing import Any
 
 from ..mcp.client import BoardApiClient, BoardApiTransportError, discover_board_api
 from ..models import utc_now_iso
+from .bridge import normalize_card_enrichment_patch
 from ..vehicle_profile import build_vehicle_profile_patch_from_vin_decode, build_vehicle_profile_patch_from_vin_research, normalize_vehicle_notes
 from .config import (
     get_agent_board_api_url,
@@ -830,6 +831,7 @@ class AgentRunner:
             facts=facts,
         )
         orchestration_results: dict[str, Any] = {}
+        patch_result = PatchResult(card_patch={})
         scenario_warnings: list[str] = []
         scenario_followup_requested = False
         scenario_followup_reason = ""
@@ -901,14 +903,24 @@ class AgentRunner:
                 scenario_followup_requested = True
                 if not scenario_followup_reason:
                     scenario_followup_reason = str(getattr(scenario_result, "followup_reason", "") or "").strip()
+            if scenario_result.patch:
+                normalized_patch = normalize_card_enrichment_patch(scenario_result.patch)
+                if normalized_patch:
+                    patch_result = self._merge_patch_results(
+                        patch_result,
+                        PatchResult(card_patch=normalized_patch),
+                    )
         facts["_scenario_feedback"] = scenario_feedback
         update_args, display_sections = self._compose_card_autofill_update(
             card_id=card_id,
             facts=facts,
             orchestration_results=orchestration_results,
         )
-        patch_result = PatchResult(card_patch={})
         verify_result = VerifyResult(applied_ok=False)
+        if update_args is None and not patch_result.is_empty():
+            update_args = {"card_id": card_id, **patch_result.card_patch}
+            if plan.execution_mode == "structured_card":
+                update_args = self._normalize_card_autofill_update(update_args)
         if update_args is not None:
             update_args, update_result, current_patch, verify_result = self._execute_contract_write_tool(
                 tool_name="update_card",

@@ -171,6 +171,11 @@ class VinEnrichmentScenarioExecutor:
             "research_payload": research_payload,
             "research_status": research_status,
         }
+        scenario_patch = self._build_card_patch(
+            facts=facts,
+            research_result=research_result,
+            research_status=research_status,
+        )
         tool_results = []
         if research_tool_payload is not None:
             tool_results.append(
@@ -199,6 +204,7 @@ class VinEnrichmentScenarioExecutor:
                 "vin_decode_status": research_status,
                 "vehicle_context": dict(facts.get("vehicle_context") or {}),
             },
+            patch=scenario_patch,
             warnings=warnings,
             needs_followup=research_status in {"insufficient", "failed"},
             followup_reason=followup_reason,
@@ -381,3 +387,49 @@ class VinEnrichmentScenarioExecutor:
         if any(str(payload.get(key, "") or "").strip() for key in ("make", "model", "model_year", "engine_model", "transmission", "drive_type", "plant_country")):
             return "insufficient"
         return "failed"
+
+    def _build_card_patch(self, *, facts: dict[str, Any], research_result: dict[str, Any], research_status: str) -> dict[str, Any]:
+        patch: dict[str, Any] = {}
+        source_summary = str(research_result.get("source_summary", "") or "").strip()
+        if not source_summary:
+            source_summary = "VIN research completed in best-effort mode."
+        profile_research_result = dict(research_result)
+        if not str(profile_research_result.get("source_summary", "") or "").strip():
+            profile_research_result["source_summary"] = source_summary
+        if profile_research_result.get("source_confidence") in (None, ""):
+            profile_research_result["source_confidence"] = 0.45 if research_status != "success" else 0.78
+        vehicle_profile_patch = build_vehicle_profile_patch_from_vin_research(
+            profile_research_result,
+            existing_profile=facts.get("vehicle_profile") if isinstance(facts.get("vehicle_profile"), dict) else {},
+            current_vin=str(facts.get("vin", "") or "").strip(),
+            include_vin=research_status == "success",
+        )
+        if vehicle_profile_patch:
+            patch["vehicle_profile"] = vehicle_profile_patch
+
+        vehicle_label = str(research_result.get("vehicle_label", "") or "").strip()
+        if not vehicle_label:
+            parts = [
+                str(research_result.get("make", "") or "").strip(),
+                str(research_result.get("model", "") or "").strip(),
+                str(research_result.get("model_year", "") or "").strip(),
+            ]
+            vehicle_label = " ".join(part for part in parts if part).strip()
+        if vehicle_label:
+            patch["vehicle"] = vehicle_label
+
+        description_line = str(research_result.get("description_line", "") or "").strip()
+        if not description_line:
+            summary_bits = [
+                str(research_result.get(key, "") or "").strip()
+                for key in ("make", "model", "model_year", "engine_model", "transmission", "drive_type")
+                if str(research_result.get(key, "") or "").strip()
+            ]
+            if summary_bits:
+                prefix = "По VIN подтверждено: " if research_status == "success" else "По VIN выполнено best-effort исследование: "
+                description_line = prefix + ", ".join(summary_bits[:4])
+            else:
+                description_line = "По VIN выполнено best-effort исследование"
+        if description_line:
+            patch["description"] = description_line if description_line.endswith((".", "!", "?")) else f"{description_line}."
+        return patch

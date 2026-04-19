@@ -48,11 +48,14 @@ class VinEnrichmentBridgeTests(unittest.TestCase):
                     "model_display": "Accord",
                     "production_year": "2003",
                     "engine_model": "V6 SOHC 24V",
+                    "gearbox_type": "Automatic",
+                    "raw_input_text": "{\"make\":\"HONDA\",\"model\":\"Accord\"}",
                     "unknown_field": "drop me",
                     "source_links_or_refs": ["https://example.com/a", ""],
                     "autofilled_fields": ["vin", "make_display", "unknown_field"],
                     "field_sources": {"vin": "vin_web_research", "unknown_field": "drop"},
                     "data_completion_state": "mostly_autofilled",
+                    "warnings": ["Sparse VIN search", ""],
                     "oem_notes": "short note",
                 },
             }
@@ -64,6 +67,9 @@ class VinEnrichmentBridgeTests(unittest.TestCase):
         self.assertEqual(patch["vehicle_profile"]["vin"], "1HGCM82633A004352")
         self.assertNotIn("unknown_field", patch["vehicle_profile"])
         self.assertEqual(patch["vehicle_profile"]["data_completion_state"], "mostly_autofilled")
+        self.assertEqual(patch["vehicle_profile"]["gearbox_type"], "Automatic")
+        self.assertIn("raw_input_text", patch["vehicle_profile"])
+        self.assertEqual(patch["vehicle_profile"]["warnings"], ["Sparse VIN search"])
 
     def test_build_card_enrichment_response_is_minimal(self) -> None:
         response = build_card_enrichment_response(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import re
 from typing import Any, Literal
 
@@ -300,7 +301,7 @@ def _build_vehicle_profile_patch_from_vin_payload(
 
     def _set_if_missing(field_name: str, value: Any) -> None:
         text = _strip_markdown_links(value)
-        if not text or str(existing.get(field_name, "") or "").strip():
+        if not text or str(existing.get(field_name, "") or "").strip() or field_name in patch:
             return
         patch[field_name] = text
         autofilled_fields.append(field_name)
@@ -335,8 +336,6 @@ def _build_vehicle_profile_patch_from_vin_payload(
                 patch["plant_country"] = text
                 autofilled_fields.append("plant_country")
                 field_sources["plant_country"] = source_key
-    if not patch:
-        return {}
     source_url = _normalize_source_reference(vin_payload.get("source_url", ""))
     patch["source_summary"] = _strip_markdown_links(source_label)
     source_confidence = _normalize_source_confidence_hint(vin_payload.get("source_confidence"))
@@ -355,6 +354,27 @@ def _build_vehicle_profile_patch_from_vin_payload(
         source_links.insert(0, source_url)
     patch["source_links_or_refs"] = source_links
     patch["data_completion_state"] = "mostly_autofilled" if len(autofilled_fields) >= 3 else "partially_autofilled"
+    raw_input_text = normalize_vehicle_raw_text(
+        json.dumps(vin_payload, ensure_ascii=False, sort_keys=True, default=str),
+        limit=6000,
+    )
+    if raw_input_text:
+        patch["raw_input_text"] = raw_input_text
+    warnings_payload = vin_payload.get("warnings")
+    warnings: list[str] = []
+    if isinstance(warnings_payload, list):
+        for warning in warnings_payload:
+            warning_text = normalize_vehicle_notes(warning, limit=400)
+            if warning_text and warning_text not in warnings:
+                warnings.append(warning_text)
+    elif isinstance(warnings_payload, str):
+        warning_text = normalize_vehicle_notes(warnings_payload, limit=1200)
+        if warning_text:
+            warnings.append(warning_text)
+    if warnings:
+        patch["warnings"] = warnings
+    if not patch:
+        return {}
     return patch
 
 

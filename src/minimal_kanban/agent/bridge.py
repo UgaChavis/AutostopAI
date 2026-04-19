@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..vehicle_profile import (
     normalize_completion_state,
+    normalize_vehicle_float,
     normalize_source_confidence,
     normalize_vehicle_field_names,
     normalize_vehicle_field_sources,
+    normalize_vehicle_int,
     normalize_vehicle_links,
     normalize_vehicle_notes,
     normalize_vehicle_text,
@@ -30,6 +33,15 @@ BRIDGE_ALLOWED_VEHICLE_PROFILE_KEYS = (
     "field_sources",
     "data_completion_state",
     "oem_notes",
+    "generation_or_platform",
+    "fuel_type",
+    "engine_displacement_l",
+    "engine_power_hp",
+    "gearbox_type",
+    "raw_input_text",
+    "raw_image_text",
+    "image_parse_status",
+    "warnings",
 )
 BRIDGE_ALLOWED_STATUS_VALUES = ("queued", "running", "needs_review", "completed", "failed")
 
@@ -152,6 +164,49 @@ def _normalize_vehicle_profile_patch(payload: dict[str, Any]) -> dict[str, Any]:
         data_completion_state = normalize_completion_state(payload.get("data_completion_state"))
         if data_completion_state:
             normalized["data_completion_state"] = data_completion_state
+    generation_or_platform = normalize_vehicle_text(payload.get("generation_or_platform"), limit=120)
+    if generation_or_platform:
+        normalized["generation_or_platform"] = generation_or_platform
+    fuel_type = normalize_vehicle_text(payload.get("fuel_type"), limit=80)
+    if fuel_type:
+        normalized["fuel_type"] = fuel_type
+    engine_displacement_l = normalize_vehicle_float(payload.get("engine_displacement_l"))
+    if engine_displacement_l is not None:
+        normalized["engine_displacement_l"] = engine_displacement_l
+    engine_power_hp = normalize_vehicle_int(payload.get("engine_power_hp"))
+    if engine_power_hp is not None:
+        normalized["engine_power_hp"] = engine_power_hp
+    gearbox_type = normalize_vehicle_text(payload.get("gearbox_type"), limit=120)
+    if gearbox_type:
+        normalized["gearbox_type"] = gearbox_type
+    raw_input_text = payload.get("raw_input_text")
+    if raw_input_text:
+        if isinstance(raw_input_text, str):
+            normalized["raw_input_text"] = normalize_vehicle_notes(raw_input_text, limit=6000)
+        else:
+            normalized["raw_input_text"] = normalize_vehicle_notes(
+                json.dumps(raw_input_text, ensure_ascii=False, sort_keys=True, default=str),
+                limit=6000,
+            )
+    raw_image_text = normalize_vehicle_notes(payload.get("raw_image_text"), limit=6000)
+    if raw_image_text:
+        normalized["raw_image_text"] = raw_image_text
+    image_parse_status = normalize_vehicle_text(payload.get("image_parse_status"), limit=40)
+    if image_parse_status:
+        normalized["image_parse_status"] = image_parse_status
+    warnings_payload = payload.get("warnings")
+    if isinstance(warnings_payload, list):
+        warnings: list[str] = []
+        for warning in warnings_payload:
+            warning_text = normalize_vehicle_notes(warning, limit=400)
+            if warning_text and warning_text not in warnings:
+                warnings.append(warning_text)
+        if warnings:
+            normalized["warnings"] = warnings
+    elif isinstance(warnings_payload, str):
+        warning_text = normalize_vehicle_notes(warnings_payload, limit=1200)
+        if warning_text:
+            normalized["warnings"] = [warning_text]
     oem_notes = normalize_vehicle_notes(payload.get("oem_notes"))
     if oem_notes:
         normalized["oem_notes"] = oem_notes
