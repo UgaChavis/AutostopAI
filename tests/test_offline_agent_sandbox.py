@@ -12,12 +12,12 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from minimal_kanban.agent.router import AgentTaskRouter
-from minimal_kanban.agent.sandbox import OfflineAgentSandbox, SandboxCard
-from minimal_kanban.agent.runner import AgentRunner
-from minimal_kanban.agent.sandbox import NullModelClient, OfflineBoardApiClient
-from minimal_kanban.agent.scenarios.base import ScenarioExecutionResult
-from minimal_kanban.agent.storage import AgentStorage
+from minimal_kanban.agent.router import AgentTaskRouter  # noqa: E402
+from minimal_kanban.agent.sandbox import OfflineAgentSandbox, SandboxCard  # noqa: E402
+from minimal_kanban.agent.runner import AgentRunner  # noqa: E402
+from minimal_kanban.agent.sandbox import NullModelClient, OfflineBoardApiClient  # noqa: E402
+from minimal_kanban.agent.scenarios.base import ScenarioExecutionResult  # noqa: E402
+from minimal_kanban.agent.storage import AgentStorage  # noqa: E402
 
 
 class OfflineAgentRouterTests(unittest.TestCase):
@@ -79,6 +79,30 @@ class OfflineAgentSandboxTests(unittest.TestCase):
         self.assertTrue(any(call["method"] == "get_card_context" for call in snapshot["calls"]))
         self.assertFalse(any(call["method"] == "update_card" for call in snapshot["calls"]))
 
+    def test_run_once_completes_with_vin_in_offline_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="autostopai-test-") as temp_dir:
+            with OfflineAgentSandbox(base_dir=Path(temp_dir)) as sandbox:
+                sandbox.seed_card(
+                    SandboxCard(
+                        id="card-1",
+                        title="Toyota Camry 2015",
+                        description="VIN: JTDKB20U093123456.",
+                    )
+                )
+                sandbox.enqueue_card_enrichment_task(
+                    card_id="card-1",
+                    task_text="Обогати карточку по VIN.",
+                )
+                processed = sandbox.run_once()
+                snapshot = sandbox.snapshot()
+
+        self.assertTrue(processed)
+        self.assertEqual(snapshot["tasks"][0]["status"], "completed")
+        self.assertTrue(any(call["method"] == "get_card_context" for call in snapshot["calls"]))
+        self.assertTrue(any(call["method"] == "research_vin" for call in snapshot["calls"]) or any(action.get("tool") == "research_vin" for action in snapshot["actions"]))
+        self.assertTrue(any(call["method"] == "update_card" for call in snapshot["calls"]))
+        self.assertEqual(snapshot["cards"]["card-1"]["vehicle_profile"]["source_summary"], "VIN web research")
+
     def test_card_enrichment_ignores_repair_order_text(self) -> None:
         with tempfile.TemporaryDirectory(prefix="autostopai-test-") as temp_dir:
             with OfflineAgentSandbox(base_dir=Path(temp_dir)) as sandbox:
@@ -122,6 +146,44 @@ class OfflineAgentSandboxTests(unittest.TestCase):
         self.assertLess(len(merged), len(long_text))
         self.assertIn("По VIN подтверждено", merged)
         self.assertIn("ИИ:", merged)
+
+    def test_future_followup_promises_are_removed_from_final_text(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="autostopai-test-") as temp_dir:
+            storage = AgentStorage(base_dir=Path(temp_dir))
+            runner = AgentRunner(
+                storage=storage,
+                board_api=OfflineBoardApiClient(),
+                model_client=NullModelClient(),
+                logger=logging.getLogger("autostopai.test"),
+            )
+            sanitized = runner._sanitize_user_facing_text(
+                "Сделано. Сейчас пришлю полное содержание карточки и заказ-наряд по тестовой карточке.",
+                fallback="Задача завершена.",
+            )
+            display = runner._normalize_display_payload(
+                {
+                    "display": {
+                        "summary": "Сейчас пришлю полное содержание карточки и заказ-наряд по тестовой карточке.",
+                        "actions": ["Сейчас пришлю ещё детали", "Проверить VIN"],
+                        "sections": [
+                            {
+                                "title": "Итог",
+                                "body": "Вернусь позже с полным результатом.",
+                                "items": ["Сейчас пришлю полный список"],
+                            }
+                        ],
+                    }
+                },
+                summary="Задача завершена.",
+                result="Карточка обработана.",
+            )
+
+        self.assertEqual(sanitized, "Сделано.")
+        self.assertEqual(display["summary"], "Карточка обработана.")
+        self.assertEqual(display["sections"][0]["title"], "Итог")
+        self.assertEqual(display["sections"][0]["body"], "")
+        self.assertEqual(display["sections"][0]["items"], [])
+        self.assertEqual(display["actions"], ["Проверить VIN"])
 
     def test_partial_vin_research_keeps_useful_patch_without_injecting_vin(self) -> None:
         with tempfile.TemporaryDirectory(prefix="autostopai-test-") as temp_dir:

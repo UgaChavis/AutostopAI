@@ -10,7 +10,7 @@ from typing import Any
 from ..mcp.client import BoardApiClient, BoardApiTransportError, discover_board_api
 from ..models import utc_now_iso
 from .bridge import normalize_card_enrichment_patch
-from ..vehicle_profile import build_vehicle_profile_patch_from_vin_decode, build_vehicle_profile_patch_from_vin_research, normalize_vehicle_notes
+from ..vehicle_profile import build_vehicle_profile_patch_from_vin_research, normalize_vehicle_notes
 from .config import (
     get_agent_board_api_url,
     get_agent_enabled,
@@ -97,6 +97,14 @@ _AUTOFILL_PART_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("фильтр", ("фильтр", "filter")),
     ("свечи зажигания", ("свеч", "spark")),
     ("аккумулятор", ("аккумулятор", "battery")),
+)
+_FOLLOWUP_PROMISE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bсейчас\s+(?:пришлю|отправлю|добавлю|вернусь|доскажу|покажу)\b[^.!?\n]*[.!?]?", re.IGNORECASE),
+    re.compile(r"\bпотом\s+(?:пришлю|отправлю|добавлю|вернусь|доскажу|покажу)\b[^.!?\n]*[.!?]?", re.IGNORECASE),
+    re.compile(r"\bвернусь\s+позже\b[^.!?\n]*[.!?]?", re.IGNORECASE),
+    re.compile(r"\bследующим\s+сообщением\b[^.!?\n]*[.!?]?", re.IGNORECASE),
+    re.compile(r"\b(?:i['’]?ll|i\s+will)\s+(?:send|share|return|come\s+back)\b[^.!?\n]*[.!?]?", re.IGNORECASE),
+    re.compile(r"\b(?:will|can)\s+send\s+later\b[^.!?\n]*[.!?]?", re.IGNORECASE),
 )
 
 
@@ -714,8 +722,8 @@ class AgentRunner:
                         }
                     )
                     continue
-                summary = str(decision.get("summary", "") or "").strip() or "Task completed."
-                result = str(decision.get("result", "") or "").strip() or summary
+                summary = self._sanitize_user_facing_text(decision.get("summary", ""), fallback="Task completed.") or "Task completed."
+                result = self._sanitize_user_facing_text(decision.get("result", ""), fallback=summary) or summary
                 display = self._normalize_display_payload(decision, summary=summary, result=result)
                 display = self._append_applied_updates(display, applied_updates)
                 self._record_log_action(
@@ -795,7 +803,6 @@ class AgentRunner:
         plan: PlanResult,
     ) -> tuple[str, str, dict[str, Any], int, list[ToolResult], PatchResult, VerifyResult]:
         card_id = self._cleanup_card_id(metadata) or str(metadata.get("card_id", "") or "").strip()
-        purpose = str(metadata.get("purpose", "") or "").strip().lower()
         if not card_id:
             raise AgentModelError("structured card task requires metadata.context.card_id.")
         tool_calls = 0
@@ -1148,7 +1155,6 @@ class AgentRunner:
         expected_targets = 0
         before_card = before_state.get("card") if isinstance(before_state.get("card"), dict) else {}
         after_card = after_state.get("card") if isinstance(after_state.get("card"), dict) else {}
-        before_repair_order = before_state.get("repair_order") if isinstance(before_state.get("repair_order"), dict) else {}
         after_repair_order = after_state.get("repair_order") if isinstance(after_state.get("repair_order"), dict) else {}
         if tool_name == "update_card":
             expected_targets = len(patch.card_patch)
@@ -1536,12 +1542,35 @@ class AgentRunner:
         if tone not in {"info", "success", "warning", "error"}:
             tone = "success"
         actions = _clean_items(payload.get("actions"))[:4]
+        title = self._sanitize_user_facing_text(title, fallback=_clean_text(summary, limit=96))
+        lead = self._sanitize_user_facing_text(lead, fallback=_clean_text(result, limit=500))
+        sanitized_sections: list[dict[str, Any]] = []
+        for section in sections:
+            sanitized_section = {
+                "title": self._sanitize_user_facing_text(section.get("title"), fallback=""),
+                "body": self._sanitize_user_facing_text(section.get("body"), fallback=""),
+                "items": [
+                    item
+                    for item in (
+                        self._sanitize_user_facing_text(value, fallback="")
+                        for value in section.get("items", [])
+                    )
+                    if item
+                ],
+            }
+            if sanitized_section["title"] or sanitized_section["body"] or sanitized_section["items"]:
+                sanitized_sections.append(sanitized_section)
+        actions = [
+            item
+            for item in (self._sanitize_user_facing_text(value, fallback="") for value in actions)
+            if item
+        ]
         normalized = {
             "emoji": emoji,
             "title": title,
             "summary": lead,
             "tone": tone,
-            "sections": sections,
+            "sections": sanitized_sections,
             "actions": actions,
         }
         if normalized["title"] or normalized["summary"] or normalized["sections"] or normalized["actions"]:
@@ -1560,6 +1589,18 @@ class AgentRunner:
         if len(text) <= self._max_tool_result_chars:
             return text
         return f"{text[: self._max_tool_result_chars]}... [truncated]"
+
+    def _sanitize_user_facing_text(self, value: Any, *, fallback: str = "") -> str:
+        text = " ".join(str(value or "").split()).strip()
+        if not text:
+            return str(fallback or "").strip()
+        sanitized = text
+        for pattern in _FOLLOWUP_PROMISE_PATTERNS:
+            sanitized = pattern.sub("", sanitized)
+        sanitized = " ".join(sanitized.split()).strip(" ,;:-")
+        if sanitized:
+            return sanitized
+        return str(fallback or "").strip()
 
     def _response_data(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
@@ -1667,7 +1708,10 @@ class AgentRunner:
     def _task_completed_message(self, metadata: dict[str, Any], *, summary: str, applied_updates: list[str]) -> str:
         purpose = str(metadata.get("purpose", "") or "").strip().lower()
         if purpose in {"card_autofill", "card_enrichment"}:
-            return "Карточка обогащена." if applied_updates else "Изменений не обнаружено."
+            if applied_updates:
+                details = ", ".join(applied_updates[:4])
+                return f"Карточка обогащена. Обновлено: {details}."
+            return "Изменений не обнаружено."
         text = str(summary or "").strip()
         return text or "Задача завершена."
 

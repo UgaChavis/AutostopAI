@@ -2,6 +2,14 @@
 
 This repository contains the extracted server-agent runtime from AutoStop CRM.
 
+GitHub origin:
+
+- `https://github.com/UgaChavis/AutostopAI.git`
+
+Current branch:
+
+- `main` tracking `origin/main`
+
 What lives here:
 
 - the agent control loop and task runner
@@ -34,6 +42,13 @@ For OpenAI access, the agent reads `OPENAI_API_KEY` first and then falls back to
 The green-button CRM flow is modeled as `card_enrichment`: it reads only the card, extracts VIN,
 enriches vehicle data, and writes back a concise description plus vehicle profile fields.
 
+Current working state:
+
+- the active path is card-only VIN enrichment
+- follow-up promises are sanitized out of final user-facing text
+- the agent should return a self-contained final answer in the same response
+- repair-order, parts, DTC, and maintenance lookups stay outside the green-button flow
+
 ## Offline sandbox
 
 You can inspect the agent's routing and planning logic without connecting to CRM:
@@ -65,10 +80,24 @@ python scripts\agent_doctor.py
 
 This checks the OpenAI call, a live VIN web research pass, the VIN cache, and the active VIN-only routing shape.
 
+## Sync workflow
+
+Use the same order every time:
+
+1. edit locally
+2. run the focused tests
+3. commit and push to GitHub
+4. pull the same commit into the server checkout
+5. restart/redeploy the service that runs the agent runtime
+
+The server checkout used by the CRM deployment is `/opt/autostopcrm` when that deployment is present.
+If the checkout is mirrored elsewhere, use the same `git pull` and service restart flow there.
+
 ## Development notes
 
 - The code was extracted from the AutoStop CRM main repository.
 - Keep the agent repo focused on orchestration, tools, and enrichment logic.
 - Keep the board API contract stable when adding new agent actions.
 - For the detailed agent logic, editing order, runtime checks, and failure modes, read [`docs/AGENT_RUNBOOK.md`](docs/AGENT_RUNBOOK.md).
+- For a compact cross-repo memory of decisions and current status, read [`docs/PROJECT_MEMORY.md`](docs/PROJECT_MEMORY.md) and [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md).
 

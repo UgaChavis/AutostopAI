@@ -2,6 +2,16 @@
 
 This document pins the minimal AI-side bridge contract for the green-button CRM flow.
 
+Repository origin:
+
+- `https://github.com/UgaChavis/AutostopAI.git`
+
+Current deployment model:
+
+- local development in this checkout
+- GitHub as the source of truth for the code branch
+- the server deployment pulls the same commit into its CRM checkout and then restarts the runtime
+
 ## Scope
 
 The active flow is only:
@@ -79,6 +89,13 @@ Common safe fields:
 - `data_completion_state`
 - `oem_notes`
 
+## Current behavior notes
+
+- The worker reads the card and returns the result in the same response when the task completes.
+- Deferred "I'll send it later" style promises are sanitized out of final text.
+- If the task cannot be completed, the response should explicitly say why and stop there.
+- The current success case is a bounded patch plus verification, not a freeform rewrite.
+
 ## Status model
 
 - `queued`
@@ -94,3 +111,9 @@ The AI-side bridge helpers live in:
 - `src/minimal_kanban/agent/bridge.py`
 - `src/minimal_kanban/vehicle_profile.py`
 
+The main operational docs are:
+
+- [`README.md`](../README.md)
+- [`docs/AGENT_RUNBOOK.md`](AGENT_RUNBOOK.md)
+- [`docs/PROJECT_MEMORY.md`](PROJECT_MEMORY.md)
+- [`PROJECT_HANDOFF.md`](../PROJECT_HANDOFF.md)

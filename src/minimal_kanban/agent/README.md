@@ -37,3 +37,11 @@ The module still contains some legacy names such as `autofill` and `card_autofil
 - Do not add new scenarios unless they are part of the CRM button flow.
 - Keep external lookups deterministic, cached, and normalized before writing back to CRM.
 - Keep card descriptions short and readable.
+- The final user-facing response must be complete in the same turn; do not promise a later follow-up unless the runtime really supports deferred delivery.
+
+## Related docs
+
+- [`docs/AGENT_RUNBOOK.md`](../../docs/AGENT_RUNBOOK.md)
+- [`docs/VIN_ENRICHMENT_BRIDGE.md`](../../docs/VIN_ENRICHMENT_BRIDGE.md)
+- [`docs/PROJECT_MEMORY.md`](../../docs/PROJECT_MEMORY.md)
+- [`PROJECT_HANDOFF.md`](../../PROJECT_HANDOFF.md)

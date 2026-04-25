@@ -266,6 +266,15 @@ class OfflineBoardApiClient:
 class NullModelClient:
     model = "offline-null"
 
+    _VIN_RESEARCH_RESPONSE = {
+        "vin": "",
+        "status": "insufficient",
+        "source_summary": "offline sandbox",
+        "source_confidence": 0.0,
+        "source_links_or_refs": [],
+        "warnings": ["offline sandbox"],
+    }
+
     def next_step(
         self,
         *,
@@ -274,14 +283,30 @@ class NullModelClient:
         reasoning_effort: str | None = None,
     ) -> dict[str, Any]:
         del system_prompt, messages, reasoning_effort
-        return {
-            "vin": "",
-            "status": "insufficient",
-            "source_summary": "offline sandbox",
-            "source_confidence": 0.0,
-            "source_links_or_refs": [],
-            "warnings": ["offline sandbox"],
-        }
+        return dict(self._VIN_RESEARCH_RESPONSE)
+
+    def complete_text(
+        self,
+        *,
+        instructions: str,
+        messages: list[dict[str, str]],
+        reasoning_effort: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> str:
+        del instructions, messages, reasoning_effort, tools
+        return json.dumps(self._VIN_RESEARCH_RESPONSE, ensure_ascii=False)
+
+    def complete_json(
+        self,
+        *,
+        instructions: str,
+        messages: list[dict[str, str]],
+        temperature: float = 0.1,
+        reasoning_effort: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        del instructions, messages, temperature, reasoning_effort, tools
+        return dict(self._VIN_RESEARCH_RESPONSE)
 
 
 class OfflineAgentSandbox:

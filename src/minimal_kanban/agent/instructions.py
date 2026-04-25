@@ -34,6 +34,9 @@ ORCHESTRATION_RULES = """Orchestration rules:
 - Do not finish the card without VIN decoding when a VIN is present.
 - Treat every write as a bounded patch, not as an unrestricted rewrite.
 - After every write, verify the result against the current CRM state before declaring success.
+- Never promise that the result will arrive in a later message.
+- If the task is complete, return the actual result in the same response.
+- If work is still blocked, return the blocker explicitly instead of saying you will continue later.
 """
 
 
@@ -71,6 +74,8 @@ CARD_ENRICHMENT_RULES = """Card enrichment rules:
 - Treat existing vehicle_profile fields as grounded known facts.
 - If VIN decoding returns only generic facts, append only the new confirmed facts.
 - If evidence is weak, do not expand the card speculatively.
+- Never tell the user that you will send the result later or in a follow-up message.
+- A final answer must be self-contained: either complete the task now or explicitly say why it cannot be completed now.
 """
 
 

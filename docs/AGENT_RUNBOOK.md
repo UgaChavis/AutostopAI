@@ -22,6 +22,13 @@ It does not currently own:
 
 Those paths exist only as compatibility or historical code and should not be expanded unless the CRM product explicitly reintroduces them.
 
+Current status:
+
+- the green-button path is active and card-only
+- VIN enrichment is the main supported scenario
+- long-running tasks are owned by the runtime queue, not the open card tab
+- final user-facing responses must be self-contained and must not promise a later message unless there is an actual deferred delivery channel
+
 ## Mental Model
 
 Think of the agent as a small pipeline:
@@ -201,6 +208,17 @@ Important operational files:
 - `actions.jsonl`
 - `vin_cache.json`
 
+### Conversation memory
+
+The runtime also keeps compact per-chat memory for Telegram-style interactions when the worker is enabled in that deployment.
+
+Typical memory artifacts:
+
+- `conversation.jsonl`
+- recent run summaries in memory tails
+
+The memory is only a continuation aid. It is not a substitute for reading the current card state first.
+
 ## Offline Test Surface
 
 Use the offline sandbox for deterministic checks without CRM:
@@ -260,3 +278,9 @@ The current agent-side runtime is healthy when:
 - the test suite passes
 - the offline sandbox still produces a card enrichment preview
 
+## Project Memory And Handoff
+
+For a compact operational summary of the current state, repository origin, and sync workflow, read:
+
+- [`docs/PROJECT_MEMORY.md`](PROJECT_MEMORY.md)
+- [`PROJECT_HANDOFF.md`](../PROJECT_HANDOFF.md)
